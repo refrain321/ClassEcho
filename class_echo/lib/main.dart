@@ -14,7 +14,37 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:shadcn_ui/shadcn_ui.dart' as shad;
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
 import 'widgets/enhanced_markdown_view.dart';
+
+typedef ShadThemeData = shad.ShadThemeData;
+typedef ShadButton = shad.ShadButton;
+typedef ShadInput = shad.ShadInput;
+typedef ShadCard = shad.ShadCard;
+
+class ShadApp {
+  static Widget material({
+    required Widget home,
+    required String title,
+    bool debugShowCheckedModeBanner = false,
+    ShadThemeData? theme,
+    ShadThemeData? darkTheme,
+    ThemeMode? themeMode,
+  }) {
+    return shad.ShadApp.custom(
+      theme: theme,
+      darkTheme: darkTheme,
+      themeMode: themeMode,
+      appBuilder: (_) => MaterialApp(
+        title: title,
+        debugShowCheckedModeBanner: debugShowCheckedModeBanner,
+        home: home,
+      ),
+    );
+  }
+}
 
 void main() {
   runApp(const ClassEchoApp());
@@ -254,7 +284,59 @@ List<Widget> buildTimelineWidgets(
   }).toList();
 }
 
-enum HistoryExportAction { markdown, ankiCsv }
+class CodeSnippetViewModel {
+  final String title;
+  final String description;
+  final String language;
+  final String code;
+  final String keyConcepts;
+
+  const CodeSnippetViewModel({
+    required this.title,
+    required this.description,
+    required this.language,
+    required this.code,
+    required this.keyConcepts,
+  });
+}
+
+CodeSnippetViewModel? tryParseCodeSnippetCard(String rawText) {
+  final block = RegExp(
+    r'```([a-zA-Z0-9_+-]*)\s*\n([\s\S]*?)```',
+    multiLine: true,
+  ).firstMatch(rawText);
+  if (block == null) return null;
+
+  final language = (block.group(1) ?? 'text').trim();
+  final code = (block.group(2) ?? '').trim();
+  if (code.isEmpty) return null;
+
+  final before = rawText.substring(0, block.start).trim();
+  final after = rawText.substring(block.end).trim();
+  final beforeLines = before
+      .split('\n')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+
+  final title = beforeLines.isNotEmpty ? beforeLines.first : 'Code Patterns';
+  final description = beforeLines.length > 1
+      ? beforeLines.sublist(1).join(' ')
+      : '代码片段总结';
+  final keyConcepts = after.isEmpty
+      ? 'Key Concepts: typed interfaces, async flow, error handling'
+      : after;
+
+  return CodeSnippetViewModel(
+    title: title,
+    description: description,
+    language: language.toUpperCase(),
+    code: code,
+    keyConcepts: keyConcepts,
+  );
+}
+
+enum HistoryExportAction { markdown, ankiCsv, delete }
 
 class AnkiCsvCard {
   final String front;
@@ -546,6 +628,7 @@ class TranscriptSegment {
 
 class ClassSession {
   final String sessionId;
+  final String title;
   final String subject;
   final String focusTerms;
   final String dateStr;
@@ -557,6 +640,7 @@ class ClassSession {
 
   ClassSession({
     String? sessionId,
+    this.title = '',
     required this.subject,
     this.focusTerms = '',
     required this.dateStr,
@@ -570,8 +654,34 @@ class ClassSession {
        transcriptSegments = transcriptSegments ?? const [],
        timelineNodes = timelineNodes ?? const [];
 
+  ClassSession copyWith({
+    String? title,
+    String? subject,
+    String? focusTerms,
+    String? dateStr,
+    String? transcript,
+    List<TranscriptSegment>? transcriptSegments,
+    List<TimelineNode>? timelineNodes,
+    List<SummaryCard>? summaries,
+    List<BountyTask>? bounties,
+  }) {
+    return ClassSession(
+      sessionId: sessionId,
+      title: title ?? this.title,
+      subject: subject ?? this.subject,
+      focusTerms: focusTerms ?? this.focusTerms,
+      dateStr: dateStr ?? this.dateStr,
+      transcript: transcript ?? this.transcript,
+      transcriptSegments: transcriptSegments ?? this.transcriptSegments,
+      timelineNodes: timelineNodes ?? this.timelineNodes,
+      summaries: summaries ?? this.summaries,
+      bounties: bounties ?? this.bounties,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'sessionId': sessionId,
+    'title': title,
     'subject': subject,
     'focusTerms': focusTerms,
     'dateStr': dateStr,
@@ -584,6 +694,7 @@ class ClassSession {
 
   factory ClassSession.fromJson(Map<String, dynamic> json) => ClassSession(
     sessionId: json['sessionId']?.toString() ?? json['dateStr']?.toString(),
+    title: json['title']?.toString() ?? '',
     subject: json['subject'],
     focusTerms: json['focusTerms']?.toString() ?? '',
     dateStr: json['dateStr'],
@@ -622,13 +733,19 @@ class ClassEchoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return ShadApp.material(
       title: 'ClassEcho',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(
-        useMaterial3: true,
-      ).copyWith(scaffoldBackgroundColor: const Color(0xFF0F172A)),
       home: const MainNavigator(),
+      themeMode: ThemeMode.dark,
+      theme: ShadThemeData(
+        brightness: Brightness.light,
+        colorScheme: shad.ShadSlateColorScheme.light(),
+      ),
+      darkTheme: ShadThemeData(
+        brightness: Brightness.dark,
+        colorScheme: shad.ShadSlateColorScheme.dark(),
+      ),
     );
   }
 }
@@ -724,44 +841,12 @@ class _MainNavigatorState extends State<MainNavigator> {
     ];
 
     return Scaffold(
-      body: Stack(
-        children: [
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFF0F172A),
-                  Color(0xFF1E1B4B),
-                  Color(0xFF0F172A),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            top: -100,
-            left: -100,
-            child: Container(
-              width: 300,
-              height: 300,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.blueAccent.withOpacity(0.2),
-              ),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 50, sigmaY: 50),
-                child: Container(),
-              ),
-            ),
-          ),
-          pages[_currentIndex],
-        ],
-      ),
+      backgroundColor: const Color(0xFF0E0E0E),
+      body: pages[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: const Color(0xFF0F172A).withOpacity(0.8),
-        selectedItemColor: Colors.cyanAccent,
-        unselectedItemColor: Colors.grey,
+        backgroundColor: const Color(0xFF121212),
+        selectedItemColor: Colors.white,
+        unselectedItemColor: Colors.white54,
         currentIndex: _currentIndex,
         onTap: _onTabTapped,
         items: const [
@@ -777,7 +862,7 @@ class _MainNavigatorState extends State<MainNavigator> {
 class GlassmorphismContainer extends StatelessWidget {
   final Widget child;
   final double width;
-  final double height;
+  final double? height;
   final double borderRadius;
   final EdgeInsetsGeometry padding;
   final Color? borderColor;
@@ -787,7 +872,7 @@ class GlassmorphismContainer extends StatelessWidget {
     super.key,
     required this.child,
     this.width = double.infinity,
-    this.height = double.infinity,
+    this.height,
     this.borderRadius = 20,
     this.padding = EdgeInsets.zero,
     this.borderColor,
@@ -796,32 +881,11 @@ class GlassmorphismContainer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(borderRadius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-        child: Container(
-          width: width,
-          height: height,
-          padding: padding,
-          decoration: BoxDecoration(
-            color: backgroundColor ?? Colors.white.withOpacity(0.05),
-            borderRadius: BorderRadius.circular(borderRadius),
-            border: Border.all(
-              color: borderColor ?? Colors.white.withOpacity(0.15),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 10,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-          child: child,
-        ),
-      ),
+    return ShadCard(
+      width: width,
+      height: height,
+      padding: padding,
+      child: child,
     );
   }
 }
@@ -917,19 +981,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 14, color: Colors.white70),
             ),
             const SizedBox(height: 10),
-            TextField(
+            ShadInput(
               controller: keyController,
               style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                hintText: '粘贴从硅基流动搞来的 sk-...',
-                hintStyle: const TextStyle(color: Colors.white30),
-                filled: true,
-                fillColor: Colors.white.withOpacity(0.1),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-              ),
+              placeholder: const Text('粘贴从硅基流动搞来的 sk-...'),
             ),
             const SizedBox(height: 16),
             const Text(
@@ -937,19 +992,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: TextStyle(fontSize: 14, color: Colors.white70),
             ),
             const SizedBox(height: 10),
-            TextField(
+            ShadInput(
               controller: baseUrlController,
               style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                hintText:
-                    '例如 http://192.168.1.10:11434 或 http://127.0.0.1:8000/v1',
-                hintStyle: const TextStyle(color: Colors.white30),
-                filled: true,
-                fillColor: Colors.white.withOpacity(0.1),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
+              placeholder: const Text(
+                '例如 http://192.168.1.10:11434 或 http://127.0.0.1:8000/v1',
               ),
             ),
             const SizedBox(height: 8),
@@ -1081,14 +1128,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SizedBox(
               width: double.infinity,
               height: 50,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.cyanAccent.withOpacity(0.8),
-                  foregroundColor: Colors.black,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
+              child: ShadButton(
                 onPressed: () {
                   widget.onApiKeySaved(keyController.text.trim());
                   widget.onModelsSaved(selectedAsrModel, selectedLlmModel);
@@ -1111,10 +1151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   );
                 },
-                child: const Text(
-                  '保存配置',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
+                child: const Text('保存配置'),
               ),
             ),
             const SizedBox(height: 12),
@@ -1174,71 +1211,24 @@ class HomeScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 20),
-                  TextField(
+                  ShadInput(
                     controller: subjectController,
                     style: const TextStyle(color: Colors.white, fontSize: 16),
                     textAlign: TextAlign.center,
-                    decoration: InputDecoration(
-                      hintText: '如：线性代数、C++高级编程',
-                      hintStyle: TextStyle(
-                        color: Colors.white.withOpacity(0.3),
-                      ),
-                      filled: true,
-                      fillColor: Colors.white.withOpacity(0.05),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: Colors.amber,
-                          width: 1.5,
-                        ),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Colors.white.withOpacity(0.1),
-                        ),
-                      ),
-                    ),
+                    placeholder: const Text('如：线性代数、C++高级编程'),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
+                  ShadInput(
                     controller: termsController,
                     style: const TextStyle(color: Colors.white, fontSize: 14),
                     maxLines: 2,
-                    decoration: InputDecoration(
-                      hintText: '当前学科重点/核心词汇（如：线性表，红黑树，时间复杂度）',
-                      hintStyle: TextStyle(
-                        color: Colors.white.withOpacity(0.3),
-                      ),
-                      filled: true,
-                      fillColor: Colors.white.withOpacity(0.05),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(
-                          color: Colors.cyanAccent,
-                          width: 1.2,
-                        ),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Colors.white.withOpacity(0.1),
-                        ),
-                      ),
-                    ),
+                    placeholder: const Text('当前学科重点/核心词汇（如：线性表，红黑树，时间复杂度）'),
                   ),
                   const Spacer(),
                   SizedBox(
                     width: double.infinity,
                     height: 45,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.amber.withOpacity(0.9),
-                        foregroundColor: Colors.black,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
+                    child: ShadButton(
                       onPressed: () {
                         String subject = subjectController.text.trim();
                         final String focusTerms = termsController.text.trim();
@@ -1258,13 +1248,7 @@ class HomeScreen extends StatelessWidget {
                           ),
                         );
                       },
-                      child: const Text(
-                        '开始上课',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                      child: const Text('开始上课'),
                     ),
                   ),
                 ],
@@ -1349,6 +1333,113 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<ClassSession> historyList = [];
+  bool _isBackfillingTitles = false;
+
+  Future<void> _deleteSession(ClassSession session) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('删除历史记录'),
+          content: Text('确认删除「${_displayTitle(session)}」吗？删除后不可恢复。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            ShadButton.destructive(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('class_history') ?? [];
+    history.removeWhere((jsonStr) {
+      final item = ClassSession.fromJson(jsonDecode(jsonStr));
+      return item.sessionId == session.sessionId;
+    });
+    await prefs.setStringList('class_history', history);
+    await _loadHistory();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('历史记录已删除'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  String _fallbackTitle(ClassSession session) {
+    if (session.summaries.isNotEmpty) {
+      final t = session.summaries.first.text.trim();
+      if (t.isNotEmpty) {
+        return t.length > 20 ? '${t.substring(0, 20)}...' : t;
+      }
+    }
+    final line = session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课程记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '');
+    if (cleaned.isEmpty) return '课程记录';
+    return cleaned.length > 20 ? '${cleaned.substring(0, 20)}...' : cleaned;
+  }
+
+  String _displayTitle(ClassSession session) {
+    final custom = session.title.trim();
+    if (custom.isNotEmpty) return custom;
+    return _fallbackTitle(session);
+  }
+
+  Future<void> _renameSessionTitle(ClassSession session) async {
+    final ctrl = TextEditingController(text: _displayTitle(session));
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('修改标题'),
+          content: ShadInput(
+            controller: ctrl,
+            maxLength: 30,
+            placeholder: const Text('输入新的标题'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            ShadButton(
+              onPressed: () => Navigator.pop(dialogContext, ctrl.text.trim()),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (newTitle == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('class_history') ?? [];
+    final idx = history.indexWhere((jsonStr) {
+      final item = ClassSession.fromJson(jsonDecode(jsonStr));
+      return item.sessionId == session.sessionId;
+    });
+    if (idx == -1) return;
+
+    final old = ClassSession.fromJson(jsonDecode(history[idx]));
+    final updated = old.copyWith(title: newTitle);
+    history[idx] = jsonEncode(updated.toJson());
+    await prefs.setStringList('class_history', history);
+    await _loadHistory();
+  }
 
   @override
   void initState() {
@@ -1358,12 +1449,121 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Future<void> _loadHistory() async {
     final prefs = await SharedPreferences.getInstance();
-    List<String> savedJsonList = prefs.getStringList('class_history') ?? [];
+    final savedJsonList = prefs.getStringList('class_history') ?? [];
     setState(() {
       historyList = savedJsonList
           .map((jsonStr) => ClassSession.fromJson(jsonDecode(jsonStr)))
           .toList();
     });
+    unawaited(_backfillMissingTitles());
+  }
+
+  Future<String> _generateAiTitleForSession(
+    ClassSession session,
+    String apiKey,
+    String llmModel,
+    String customBaseUrl,
+  ) async {
+    final fallback = _fallbackTitle(session);
+    final summaryHint = session.summaries
+        .take(3)
+        .map((e) => e.text.trim())
+        .where((e) => e.isNotEmpty)
+        .join('；');
+    final transcriptHint = session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .take(8)
+        .join(' ');
+
+    try {
+      final response = await http
+          .post(
+            buildOpenAiStyleUri(customBaseUrl, 'chat/completions'),
+            headers: {
+              'Authorization': 'Bearer $apiKey',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'model': llmModel,
+              'temperature': 0.2,
+              'max_tokens': 40,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': '你是课堂记录命名助手。请仅输出一个简洁标题，不超过18个中文字符，不要引号，不要句号。',
+                },
+                {
+                  'role': 'user',
+                  'content':
+                      '课程：${session.subject}\n要点：$summaryHint\n片段：$transcriptHint',
+                },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode != 200) return fallback;
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final raw =
+          data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+      final cleaned = raw
+          .replaceAll('\n', ' ')
+          .replaceAll('"', '')
+          .replaceAll('“', '')
+          .replaceAll('”', '')
+          .trim();
+      if (cleaned.isEmpty) return fallback;
+      return cleaned.length > 18 ? cleaned.substring(0, 18) : cleaned;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  Future<void> _backfillMissingTitles() async {
+    if (_isBackfillingTitles) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString('silicon_api_key') ?? '';
+    if (apiKey.trim().isEmpty) return;
+
+    final llmModel = prefs.getString('llm_model') ?? defaultLlmModel;
+    final customBaseUrl = prefs.getString('custom_base_url') ?? '';
+    final history = prefs.getStringList('class_history') ?? [];
+
+    final indexes = <int>[];
+    for (int i = 0; i < history.length; i++) {
+      final item = ClassSession.fromJson(jsonDecode(history[i]));
+      if (item.title.trim().isEmpty) {
+        indexes.add(i);
+      }
+    }
+    if (indexes.isEmpty) return;
+
+    _isBackfillingTitles = true;
+    try {
+      for (final idx in indexes) {
+        final old = ClassSession.fromJson(jsonDecode(history[idx]));
+        final aiTitle = await _generateAiTitleForSession(
+          old,
+          apiKey,
+          llmModel,
+          customBaseUrl,
+        );
+        final updated = old.copyWith(title: aiTitle);
+        history[idx] = jsonEncode(updated.toJson());
+      }
+      await prefs.setStringList('class_history', history);
+      if (!mounted) return;
+      setState(() {
+        historyList = history
+            .map((jsonStr) => ClassSession.fromJson(jsonDecode(jsonStr)))
+            .toList();
+      });
+    } finally {
+      _isBackfillingTitles = false;
+    }
   }
 
   Future<void> _retryPendingTasks() async {
@@ -1445,6 +1645,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           preview = '${preview.substring(0, 50)}...';
 
                         return GestureDetector(
+                          onLongPress: () => _deleteSession(session),
                           onTap: () async {
                             // 等待详情页返回（因为详情页里可能修改了卡片），返回后重新拉取最新数据刷新列表
                             await Navigator.push(
@@ -1459,7 +1660,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           child: Container(
                             margin: const EdgeInsets.only(bottom: 16),
                             child: GlassmorphismContainer(
-                              height: double.infinity,
                               padding: const EdgeInsets.all(16),
                               borderColor: Colors.cyanAccent.withOpacity(0.2),
                               child: Column(
@@ -1470,14 +1670,58 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(
-                                        session.subject,
-                                        style: const TextStyle(
-                                          color: Colors.amber,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
+                                      Expanded(
+                                        child: Text(
+                                          _displayTitle(session),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.amber,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16,
+                                          ),
                                         ),
                                       ),
+                                      const SizedBox(width: 8),
+                                      IconButton(
+                                        tooltip: '修改标题',
+                                        icon: const Icon(
+                                          Icons.edit,
+                                          color: Colors.cyanAccent,
+                                          size: 18,
+                                        ),
+                                        onPressed: () =>
+                                            _renameSessionTitle(session),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.menu_book_rounded,
+                                        size: 14,
+                                        color: Colors.white54,
+                                      ),
+                                      const SizedBox(width: 5),
+                                      Expanded(
+                                        child: Text(
+                                          session.subject,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      const Icon(
+                                        Icons.schedule,
+                                        size: 14,
+                                        color: Colors.white54,
+                                      ),
+                                      const SizedBox(width: 5),
                                       Text(
                                         session.dateStr,
                                         style: const TextStyle(
@@ -1549,6 +1793,125 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
   final Map<String, bool> _isAnsweringByTaskId = {};
   final Map<String, String> _answerMarkdownByTaskId = {};
   final Map<String, String?> _answerErrorByTaskId = {};
+  String? _manualTitle;
+
+  Future<void> _deleteCurrentSession() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('删除历史记录'),
+          content: Text('确认删除「$_displayTitle」吗？删除后不可恢复。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            ShadButton.destructive(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('class_history') ?? [];
+    history.removeWhere((jsonStr) {
+      final item = ClassSession.fromJson(jsonDecode(jsonStr));
+      return item.sessionId == widget.session.sessionId;
+    });
+    await prefs.setStringList('class_history', history);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('历史记录已删除'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    Navigator.pop(context, true);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _manualTitle = widget.session.title.trim().isEmpty
+        ? null
+        : widget.session.title.trim();
+  }
+
+  String get _displayTitle {
+    final current = (_manualTitle ?? widget.session.title).trim();
+    if (current.isNotEmpty) return current;
+    if (widget.session.summaries.isNotEmpty) {
+      final s = widget.session.summaries.first.text.trim();
+      if (s.isNotEmpty) return s.length > 20 ? '${s.substring(0, 20)}...' : s;
+    }
+    final line = widget.session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课程记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '').trim();
+    if (cleaned.isEmpty) return '课程记录';
+    return cleaned.length > 20 ? cleaned.substring(0, 20) : cleaned;
+  }
+
+  Future<void> _editSessionTitle() async {
+    final ctrl = TextEditingController(text: _displayTitle);
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('修改标题'),
+          content: ShadInput(
+            controller: ctrl,
+            maxLength: 30,
+            placeholder: const Text('输入新的标题'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            ShadButton(
+              onPressed: () => Navigator.pop(dialogContext, ctrl.text.trim()),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (newTitle == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('class_history') ?? [];
+    final idx = history.indexWhere((jsonStr) {
+      final item = ClassSession.fromJson(jsonDecode(jsonStr));
+      return item.sessionId == widget.session.sessionId;
+    });
+    if (idx == -1) return;
+
+    final old = ClassSession.fromJson(jsonDecode(history[idx]));
+    final updated = old.copyWith(title: newTitle);
+    history[idx] = jsonEncode(updated.toJson());
+    await prefs.setStringList('class_history', history);
+
+    if (!mounted) return;
+    setState(() {
+      _manualTitle = newTitle;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('标题已更新'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
   void _showTimelineImagePreview(TimelineNode node) {
     final imagePath = node.imagePath;
@@ -1573,6 +1936,26 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
         );
       },
     );
+  }
+
+  String _difficultyForTask(BountyTask task) {
+    final len = task.context.trim().length;
+    if (len >= 90) return 'HARD';
+    if (len >= 45) return 'MEDIUM';
+    return 'EASY';
+  }
+
+  int _xpForTask(BountyTask task) {
+    return switch (_difficultyForTask(task)) {
+      'HARD' => 120,
+      'MEDIUM' => 80,
+      _ => 40,
+    };
+  }
+
+  String _dueDateForTask(BountyTask task) {
+    final now = DateTime.now().add(const Duration(days: 2));
+    return '${now.month}/${now.day}';
   }
 
   List<AnkiCsvCard> _buildAnkiCards() {
@@ -1967,33 +2350,18 @@ $context
               ),
             ],
           ),
-          content: TextField(
+          content: ShadInput(
             controller: ctrl,
             maxLines: 4,
             style: const TextStyle(color: Colors.white, fontSize: 14),
-            decoration: InputDecoration(
-              filled: true,
-              fillColor: Colors.black26,
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Colors.cyanAccent),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: Colors.white24),
-              ),
-            ),
+            placeholder: const Text('输入修正后的要点'),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('放弃', style: TextStyle(color: Colors.white54)),
             ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.cyanAccent,
-                foregroundColor: Colors.black,
-              ),
+            ShadButton(
               onPressed: () async {
                 setState(() {
                   widget.session.summaries[index].text = ctrl.text.trim();
@@ -2009,10 +2377,7 @@ $context
                   );
                 }
               },
-              child: const Text(
-                '覆写',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
+              child: const Text('覆写'),
             ),
           ],
         );
@@ -2026,7 +2391,7 @@ $context
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         title: Text(
-          widget.session.subject,
+          _displayTitle,
           style: const TextStyle(fontWeight: FontWeight.w300, fontSize: 16),
         ),
         centerTitle: true,
@@ -2037,6 +2402,11 @@ $context
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
+          IconButton(
+            tooltip: '修改标题',
+            onPressed: _editSessionTitle,
+            icon: const Icon(Icons.edit, color: Colors.cyanAccent),
+          ),
           PopupMenuButton<HistoryExportAction>(
             icon: const Icon(Icons.more_vert, color: Colors.cyanAccent),
             onSelected: (value) {
@@ -2046,6 +2416,9 @@ $context
                   break;
                 case HistoryExportAction.ankiCsv:
                   _exportAnkiCsv();
+                  break;
+                case HistoryExportAction.delete:
+                  _deleteCurrentSession();
                   break;
               }
             },
@@ -2057,6 +2430,11 @@ $context
               PopupMenuItem(
                 value: HistoryExportAction.ankiCsv,
                 child: Text('导出 Anki (CSV)'),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem(
+                value: HistoryExportAction.delete,
+                child: Text('删除该记录'),
               ),
             ],
           ),
@@ -2119,15 +2497,16 @@ $context
                     onLongPress: () => _showEditDialog(idx, card),
                     child: Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.only(bottom: 12.0),
-                      color: Colors.transparent,
-                      child: Text(
-                        '• ${card.text}',
-                        style: TextStyle(
-                          color: card.isHighlighted
-                              ? Colors.amber
-                              : Colors.white70,
-                          height: 1.5,
+                      padding: const EdgeInsets.only(bottom: 10.0),
+                      child: ShadCard(
+                        child: Text(
+                          card.text,
+                          style: TextStyle(
+                            color: card.isHighlighted
+                                ? Colors.white
+                                : Colors.white70,
+                            height: 1.5,
+                          ),
                         ),
                       ),
                     ),
@@ -2147,64 +2526,100 @@ $context
                     final answering = _isAnsweringByTaskId[b.id] ?? false;
                     final answerText = _answerMarkdownByTaskId[b.id] ?? '';
                     final answerErr = _answerErrorByTaskId[b.id];
+                    final difficulty = _difficultyForTask(b);
+                    final xp = _xpForTask(b);
+                    final dueDate = _dueDateForTask(b);
                     return Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.only(bottom: 12.0),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.03),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '[${b.timeStr}] ${b.context}',
-                            style: const TextStyle(
-                              color: Colors.white60,
-                              fontStyle: FontStyle.italic,
-                              height: 1.5,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ShadCard(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                shad.ShadCheckbox(
+                                  value: false,
+                                  onChanged: (_) {},
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    b.context,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  '+$xp XP',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: OutlinedButton.icon(
-                              onPressed: answering
-                                  ? null
-                                  : () => _requestDeepAnswer(b),
-                              icon: const Icon(Icons.psychology_alt, size: 18),
-                              label: Text(answering ? '正在生成解答...' : '生成深度解答'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.cyanAccent,
-                                side: const BorderSide(
-                                  color: Colors.cyanAccent,
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                shad.ShadBadge.secondary(
+                                  child: Text(difficulty),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Due $dueDate',
+                                  style: const TextStyle(
+                                    color: Colors.white60,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  b.timeStr,
+                                  style: const TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: ShadButton.outline(
+                                onPressed: answering
+                                    ? null
+                                    : () => _requestDeepAnswer(b),
+                                child: Text(answering ? '正在生成解答...' : '生成深度解答'),
+                              ),
+                            ),
+                            if (answering) ...[
+                              const SizedBox(height: 10),
+                              const LinearProgressIndicator(minHeight: 2),
+                            ],
+                            if (answerErr != null) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                answerErr,
+                                style: const TextStyle(
+                                  color: Colors.orangeAccent,
+                                  fontSize: 12,
                                 ),
                               ),
-                            ),
-                          ),
-                          if (answering) ...[
-                            const SizedBox(height: 10),
-                            const LinearProgressIndicator(minHeight: 2),
+                            ],
+                            if (answerText.trim().isNotEmpty) ...[
+                              const SizedBox(height: 10),
+                              const Divider(color: Colors.white24),
+                              const SizedBox(height: 6),
+                              EnhancedMarkdownView(data: answerText),
+                            ],
                           ],
-                          if (answerErr != null) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              answerErr,
-                              style: const TextStyle(
-                                color: Colors.orangeAccent,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                          if (answerText.trim().isNotEmpty) ...[
-                            const SizedBox(height: 10),
-                            const Divider(color: Colors.white24),
-                            const SizedBox(height: 6),
-                            EnhancedMarkdownView(data: answerText),
-                          ],
-                        ],
+                        ),
                       ),
                     );
                   }),
@@ -2266,6 +2681,10 @@ class LiveScreen extends StatefulWidget {
 
 class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   final AudioRecorder audioRecorder = AudioRecorder();
+  static const int _audioSampleRate = 16000;
+  static const int _audioBytesPerSample = 2;
+  // 仅用于展示“本次预估消费”，具体账单以平台结算页为准。
+  static const double _asrPriceRmbPerMinute = 0.012;
   bool isRecording = false;
   bool isBreakMode = false;
   bool isPowerSavingMode = false;
@@ -2276,6 +2695,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   bool _showStabilityPanel = true;
   bool _isRetryingPending = false;
   int _pendingChunkCount = 0;
+  int _uploadedAudioMs = 0;
   String? _lastPipelineError;
   final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
@@ -2293,11 +2713,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Timer? sliceTimer;
   Timer? _stabilityTimer;
 
-  Duration get _sliceDuration => isPowerSavingMode
-      ? const Duration(seconds: 25)
-      : const Duration(seconds: 15);
+  Duration get _sliceDuration => const Duration(seconds: 15);
 
-  int get _semanticMinLength => isPowerSavingMode ? 120 : 60;
+  int get _semanticMinLength => 60;
 
   @override
   void initState() {
@@ -2567,6 +2985,11 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Future<void> _sendToCloudZeroLoss(List<int> rawPcmData) async {
     Uint8List? wavBytes;
     try {
+      final sampleCount = rawPcmData.length ~/ _audioBytesPerSample;
+      final chunkMs = ((sampleCount * 1000) / _audioSampleRate).round();
+      if (chunkMs > 0) {
+        _uploadedAudioMs += chunkMs;
+      }
       wavBytes = _generateWavHeader(rawPcmData, 16000, 1);
       var request = http.MultipartRequest(
         'POST',
@@ -2741,6 +3164,11 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   }
 
   void _insertSummaryCardsWithContext(String summary) {
+    if (summary.contains('```')) {
+      aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+      return;
+    }
+
     final units = _extractSummaryUnits(summary);
     if (units.isEmpty) {
       aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
@@ -2958,7 +3386,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     return finalBytes;
   }
 
-  Future<void> _stopContinuousPipeline() async {
+  Future<void> _stopContinuousPipeline({bool fastMode = false}) async {
     if (_isStopping) return;
     _isStopping = true;
 
@@ -2975,10 +3403,24 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     if (mainAudioBuffer.isNotEmpty) {
       final List<int> lastChunk = List<int>.from(mainAudioBuffer);
       mainAudioBuffer.clear();
-      await _sendToCloudZeroLoss(lastChunk);
+      if (fastMode) {
+        try {
+          final sampleCount = lastChunk.length ~/ _audioBytesPerSample;
+          final chunkMs = ((sampleCount * 1000) / _audioSampleRate).round();
+          if (chunkMs > 0) {
+            _uploadedAudioMs += chunkMs;
+          }
+          final wavBytes = _generateWavHeader(lastChunk, 16000, 1);
+          await _cachePendingAudioTask(wavBytes, '快速退出时缓存，待后台补偿');
+        } catch (e) {
+          debugPrint('快速退出缓存尾段失败: $e');
+        }
+      } else {
+        await _sendToCloudZeroLoss(lastChunk);
+      }
     }
 
-    if (semanticBuffer.trim().isNotEmpty) {
+    if (!fastMode && semanticBuffer.trim().isNotEmpty) {
       final String remainText = semanticBuffer;
       final nodesToSummarize = List<TimelineNode>.from(semanticWindowNodes);
       _clearSemanticWindow();
@@ -2988,9 +3430,13 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     try {
       final prefs = await SharedPreferences.getInstance();
       List<String> history = prefs.getStringList('class_history') ?? [];
+      final aiTitle = fastMode
+          ? _buildFallbackSessionTitle()
+          : await _generateSessionTitle();
 
       ClassSession newSession = ClassSession(
         sessionId: _sessionId,
+        title: aiTitle,
         subject: widget.subjectName,
         focusTerms: widget.focusTerms,
         dateStr: DateTime.now().toString().substring(0, 16),
@@ -3003,17 +3449,25 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
       history.insert(0, jsonEncode(newSession.toJson()));
       await prefs.setStringList('class_history', history);
-      await _refreshPendingCount();
+      if (fastMode) {
+        unawaited(_refreshPendingCount());
+      } else {
+        await _refreshPendingCount();
+      }
 
       if (!_hasConsumedForSession) {
-        final count = (prefs.getInt('lesson_consume_count') ?? 0) + 1;
-        await prefs.setInt('lesson_consume_count', count);
+        final currentCostRmb =
+            (_uploadedAudioMs / 60000.0) * _asrPriceRmbPerMinute;
+        final oldTotalRmb = prefs.getDouble('lesson_total_rmb') ?? 0;
+        await prefs.setDouble('lesson_total_rmb', oldTotalRmb + currentCostRmb);
         _hasConsumedForSession = true;
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('已结算听课 1 次，累计消费 $count 次。'),
+              content: Text(
+                '本次预估消费 ¥${currentCostRmb.toStringAsFixed(4)}（以平台账单为准）',
+              ),
               backgroundColor: Colors.indigo,
               behavior: SnackBarBehavior.floating,
             ),
@@ -3021,7 +3475,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         }
       }
 
-      if (mounted) {
+      if (mounted && !fastMode) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('课堂记录已保存到历史记录。'),
@@ -3042,16 +3496,104 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     setState(() {
       isPowerSavingMode = !isPowerSavingMode;
     });
-    if (isRecording && !isBreakMode) {
-      _startSliceTimer();
+    if (isPowerSavingMode) {
+      await WakelockPlus.disable();
+    } else if (isRecording) {
+      await WakelockPlus.enable();
     }
+    _showRealtimeStatusSnackBar(
+      isPowerSavingMode ? '省电模式已开启：仅降低手机自身功耗，不影响识别与总结功能。' : '省电模式已关闭。',
+    );
+  }
+
+  Future<String> _generateSessionTitle() async {
+    final fallback = _buildFallbackSessionTitle();
+    if (widget.apiKey.trim().isEmpty) return fallback;
+
+    final summaryHint = aiSummaryCards
+        .take(3)
+        .map((e) => e.text.trim())
+        .where((e) => e.isNotEmpty)
+        .join('；');
+    final transcriptHint = fullTranscript
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .take(8)
+        .join(' ');
+
+    try {
+      final response = await http
+          .post(
+            buildOpenAiStyleUri(widget.customBaseUrl, 'chat/completions'),
+            headers: {
+              'Authorization': 'Bearer ${widget.apiKey}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'model': widget.llmModel,
+              'temperature': 0.2,
+              'max_tokens': 40,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': '你是课堂记录命名助手。请仅输出一个简洁标题，不超过18个中文字符，不要引号，不要句号。',
+                },
+                {
+                  'role': 'user',
+                  'content':
+                      '课程：${widget.subjectName}\n要点：$summaryHint\n片段：$transcriptHint',
+                },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode != 200) return fallback;
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final raw =
+          data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+      final cleaned = raw
+          .replaceAll('\n', ' ')
+          .replaceAll('"', '')
+          .replaceAll('“', '')
+          .replaceAll('”', '')
+          .trim();
+      if (cleaned.isEmpty) return fallback;
+      return cleaned.length > 18 ? cleaned.substring(0, 18) : cleaned;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  String _buildFallbackSessionTitle() {
+    if (aiSummaryCards.isNotEmpty) {
+      final first = aiSummaryCards.first.text.trim();
+      if (first.isNotEmpty) {
+        return first.length > 18 ? first.substring(0, 18) : first;
+      }
+    }
+    final line = fullTranscript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课堂记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '').trim();
+    if (cleaned.isEmpty) return '课堂记录';
+    return cleaned.length > 18 ? cleaned.substring(0, 18) : cleaned;
+  }
+
+  void _showRealtimeStatusSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    // 立即清空当前与排队中的提示，确保状态提示始终与最新状态一致。
+    messenger
+      ..clearSnackBars()
+      ..removeCurrentSnackBar();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(
-          isPowerSavingMode ? '省电模式已开启：降低上传频率与推理触发频率。' : '省电模式已关闭。',
-        ),
+        content: Text(message),
         behavior: SnackBarBehavior.floating,
+        duration: const Duration(milliseconds: 900),
       ),
     );
   }
@@ -3068,13 +3610,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       recorderStreamSubscription = null;
       await audioRecorder.stop();
       await _drainAndSendCurrentBuffer();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已进入课间休息，暂不监听；可自由切到其他应用。'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      _showRealtimeStatusSnackBar('已进入课间休息，暂不监听；可自由切到其他应用。');
       return;
     }
 
@@ -3083,19 +3619,13 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     setState(() {
       isBreakMode = false;
     });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('课间休息结束，已恢复课堂监听。'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    _showRealtimeStatusSnackBar('课间休息结束，已恢复课堂监听。');
   }
 
   Future<void> _exitAndSave() async {
     if (_isStopping) return;
     if (isRecording) {
-      await _stopContinuousPipeline();
+      await _stopContinuousPipeline(fastMode: true);
     }
     if (!mounted) return;
     Navigator.pop(context);
@@ -3119,7 +3649,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
               onPressed: () => Navigator.pop(dialogContext, 'pause_only'),
               child: const Text('仅暂停不结束'),
             ),
-            ElevatedButton(
+            ShadButton(
               onPressed: () => Navigator.pop(dialogContext, 'save_exit'),
               child: const Text('保存并退出'),
             ),
@@ -3152,6 +3682,134 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     var highlighted = aiSummaryCards.where((c) => c.isHighlighted).toList();
     var normal = aiSummaryCards.where((c) => !c.isHighlighted).toList();
     return [...highlighted, ...normal];
+  }
+
+  Widget _buildCodeSummaryCard(SummaryCard card) {
+    final parsed = tryParseCodeSnippetCard(card.text)!;
+    return ShadCard(
+      padding: const EdgeInsets.all(0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        parsed.title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        parsed.description,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.more_horiz, size: 18, color: Colors.white54),
+              ],
+            ),
+          ),
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF09090B),
+              border: Border.all(color: Colors.white12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: const BoxDecoration(
+                    border: Border(bottom: BorderSide(color: Colors.white12)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.circle, size: 8, color: Colors.white38),
+                      const SizedBox(width: 6),
+                      const Icon(Icons.circle, size: 8, color: Colors.white24),
+                      const SizedBox(width: 6),
+                      const Icon(Icons.circle, size: 8, color: Colors.white24),
+                      const Spacer(),
+                      Text(
+                        parsed.language,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 10,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                HighlightView(
+                  parsed.code,
+                  language: parsed.language.toLowerCase(),
+                  theme: atomOneDarkTheme,
+                  padding: const EdgeInsets.all(12),
+                  textStyle: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+            child: RichText(
+              text: TextSpan(
+                style: const TextStyle(color: Colors.white60, fontSize: 12),
+                children: [
+                  const TextSpan(
+                    text: 'Key Concepts: ',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  TextSpan(text: parsed.keyConcepts),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKnowledgeCard(SummaryCard card) {
+    final parsed = tryParseCodeSnippetCard(card.text);
+    if (parsed != null) {
+      return _buildCodeSummaryCard(card);
+    }
+    return ShadCard(
+      child: Text(
+        card.text,
+        style: TextStyle(
+          color: card.isHighlighted ? Colors.white : Colors.white70,
+          height: 1.55,
+        ),
+      ),
+    );
   }
 
   void _createBountyTask() {
@@ -3323,26 +3981,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                         ),
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: card.isHighlighted
-                                ? Colors.amber.withOpacity(0.15)
-                                : Colors.purpleAccent.withOpacity(0.05),
-                            border: Border.all(
-                              color: card.isHighlighted
-                                  ? Colors.amber
-                                  : Colors.purpleAccent.withOpacity(0.3),
-                            ),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            card.text,
-                            style: TextStyle(
-                              color: card.isHighlighted
-                                  ? Colors.white
-                                  : Colors.white70,
-                            ),
-                          ),
+                          child: _buildKnowledgeCard(card),
                         ),
                       );
                     },
@@ -3361,17 +4000,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
               ],
               if (_showStabilityPanel) ...[
                 const SizedBox(height: 10),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.white12),
-                  ),
+                ShadCard(
                   child: Row(
                     children: [
                       Expanded(
@@ -3383,7 +4012,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                           ),
                         ),
                       ),
-                      TextButton(
+                      ShadButton.outline(
                         onPressed: _isRetryingPending
                             ? null
                             : _retryPendingInBackground,
@@ -3521,6 +4150,26 @@ class BountyBoardSheet extends StatefulWidget {
 class _BountyBoardSheetState extends State<BountyBoardSheet> {
   final GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
 
+  String _difficultyForTask(BountyTask task) {
+    final len = task.context.trim().length;
+    if (len >= 90) return 'HARD';
+    if (len >= 45) return 'MEDIUM';
+    return 'EASY';
+  }
+
+  int _xpForTask(BountyTask task) {
+    return switch (_difficultyForTask(task)) {
+      'HARD' => 120,
+      'MEDIUM' => 80,
+      _ => 40,
+    };
+  }
+
+  String _dueDateForTask(BountyTask task) {
+    final due = DateTime.now().add(const Duration(days: 2));
+    return '${due.month}/${due.day}';
+  }
+
   void _handleSettle(BountyTask task) {
     final int index = widget.tasks.indexOf(task);
     if (index == -1) return;
@@ -3546,54 +4195,74 @@ class _BountyBoardSheetState extends State<BountyBoardSheet> {
   }
 
   Widget _buildAnimatedTaskItem(BountyTask task, Animation<double> animation) {
+    final difficulty = _difficultyForTask(task);
+    final xp = _xpForTask(task);
+    final dueDate = _dueDateForTask(task);
+
     return SizeTransition(
       sizeFactor: animation,
       axisAlignment: -1.0,
       child: FadeTransition(
         opacity: animation,
         child: Container(
-          margin: const EdgeInsets.only(bottom: 15),
-          padding: const EdgeInsets.all(15),
-          decoration: BoxDecoration(
-            color: Colors.redAccent.withOpacity(0.1),
-            border: Border.all(
-              color: Colors.redAccent.withOpacity(0.4),
-              width: 1.5,
-            ),
-            borderRadius: BorderRadius.circular(15),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '⏱️ ${task.timeStr}',
-                    style: const TextStyle(
-                      color: Colors.amber,
-                      fontWeight: FontWeight.bold,
+          margin: const EdgeInsets.only(bottom: 10),
+          child: ShadCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    shad.ShadCheckbox(
+                      value: false,
+                      onChanged: (_) => _handleSettle(task),
                     ),
-                  ),
-                  AnimatedSettleButton(onSettle: () => _handleSettle(task)),
-                ],
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                '案发现场上下文：',
-                style: TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                '“${task.context}”',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  height: 1.5,
-                  fontStyle: FontStyle.italic,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        task.context,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '+$xp XP',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    shad.ShadBadge.secondary(child: Text(difficulty)),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Due $dueDate',
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      task.timeStr,
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const Spacer(),
+                    ShadButton.ghost(
+                      onPressed: () => _handleSettle(task),
+                      child: const Text('结算'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -3602,47 +4271,33 @@ class _BountyBoardSheetState extends State<BountyBoardSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return ShadCard(
       height: MediaQuery.of(context).size.height * 0.75,
-      decoration: const BoxDecoration(
-        color: Color(0xFF1E1B4B),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
-      ),
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 5,
-              decoration: BoxDecoration(
-                color: Colors.white30,
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 4),
           const Row(
             children: [
-              Icon(Icons.assignment_late, color: Colors.amber, size: 28),
+              Icon(Icons.assignment_late, color: Colors.white, size: 20),
               SizedBox(width: 10),
               Text(
-                '悬赏委托中心',
+                'Weekly Challenges',
                 style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
                   color: Colors.white,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 14),
           Expanded(
             child: widget.tasks.isEmpty
                 ? const Center(
                     child: Text(
-                      '🎉 太棒了！当前没有任何未解决的知识盲区。',
+                      'No open challenges.',
                       style: TextStyle(color: Colors.white54),
                     ),
                   )
@@ -3658,50 +4313,6 @@ class _BountyBoardSheetState extends State<BountyBoardSheet> {
                   ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// 附带点击回弹动效的物理反馈按钮
-class AnimatedSettleButton extends StatefulWidget {
-  final VoidCallback onSettle;
-  const AnimatedSettleButton({super.key, required this.onSettle});
-
-  @override
-  State<AnimatedSettleButton> createState() => _AnimatedSettleButtonState();
-}
-
-class _AnimatedSettleButtonState extends State<AnimatedSettleButton> {
-  bool _isPressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _isPressed = true),
-      onTapCancel: () => setState(() => _isPressed = false),
-      onTapUp: (_) {
-        setState(() => _isPressed = false);
-        widget.onSettle();
-      },
-      child: AnimatedScale(
-        scale: _isPressed ? 0.9 : 1.0,
-        duration: const Duration(milliseconds: 100),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.greenAccent.withOpacity(0.2),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.greenAccent.withOpacity(0.5)),
-          ),
-          child: const Text(
-            '结算清除',
-            style: TextStyle(
-              color: Colors.greenAccent,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
       ),
     );
   }
