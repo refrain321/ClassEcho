@@ -546,6 +546,7 @@ class TranscriptSegment {
 
 class ClassSession {
   final String sessionId;
+  final String title;
   final String subject;
   final String focusTerms;
   final String dateStr;
@@ -557,6 +558,7 @@ class ClassSession {
 
   ClassSession({
     String? sessionId,
+    this.title = '',
     required this.subject,
     this.focusTerms = '',
     required this.dateStr,
@@ -570,8 +572,34 @@ class ClassSession {
        transcriptSegments = transcriptSegments ?? const [],
        timelineNodes = timelineNodes ?? const [];
 
+  ClassSession copyWith({
+    String? title,
+    String? subject,
+    String? focusTerms,
+    String? dateStr,
+    String? transcript,
+    List<TranscriptSegment>? transcriptSegments,
+    List<TimelineNode>? timelineNodes,
+    List<SummaryCard>? summaries,
+    List<BountyTask>? bounties,
+  }) {
+    return ClassSession(
+      sessionId: sessionId,
+      title: title ?? this.title,
+      subject: subject ?? this.subject,
+      focusTerms: focusTerms ?? this.focusTerms,
+      dateStr: dateStr ?? this.dateStr,
+      transcript: transcript ?? this.transcript,
+      transcriptSegments: transcriptSegments ?? this.transcriptSegments,
+      timelineNodes: timelineNodes ?? this.timelineNodes,
+      summaries: summaries ?? this.summaries,
+      bounties: bounties ?? this.bounties,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'sessionId': sessionId,
+    'title': title,
     'subject': subject,
     'focusTerms': focusTerms,
     'dateStr': dateStr,
@@ -584,6 +612,7 @@ class ClassSession {
 
   factory ClassSession.fromJson(Map<String, dynamic> json) => ClassSession(
     sessionId: json['sessionId']?.toString() ?? json['dateStr']?.toString(),
+    title: json['title']?.toString() ?? '',
     subject: json['subject'],
     focusTerms: json['focusTerms']?.toString() ?? '',
     dateStr: json['dateStr'],
@@ -777,7 +806,7 @@ class _MainNavigatorState extends State<MainNavigator> {
 class GlassmorphismContainer extends StatelessWidget {
   final Widget child;
   final double width;
-  final double height;
+  final double? height;
   final double borderRadius;
   final EdgeInsetsGeometry padding;
   final Color? borderColor;
@@ -787,7 +816,7 @@ class GlassmorphismContainer extends StatelessWidget {
     super.key,
     required this.child,
     this.width = double.infinity,
-    this.height = double.infinity,
+    this.height,
     this.borderRadius = 20,
     this.padding = EdgeInsets.zero,
     this.borderColor,
@@ -1349,6 +1378,72 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<ClassSession> historyList = [];
+  bool _isBackfillingTitles = false;
+
+  String _fallbackTitle(ClassSession session) {
+    if (session.summaries.isNotEmpty) {
+      final t = session.summaries.first.text.trim();
+      if (t.isNotEmpty) {
+        return t.length > 20 ? '${t.substring(0, 20)}...' : t;
+      }
+    }
+    final line = session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课程记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '');
+    if (cleaned.isEmpty) return '课程记录';
+    return cleaned.length > 20 ? '${cleaned.substring(0, 20)}...' : cleaned;
+  }
+
+  String _displayTitle(ClassSession session) {
+    final custom = session.title.trim();
+    if (custom.isNotEmpty) return custom;
+    return _fallbackTitle(session);
+  }
+
+  Future<void> _renameSessionTitle(ClassSession session) async {
+    final ctrl = TextEditingController(text: _displayTitle(session));
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('修改标题'),
+          content: TextField(
+            controller: ctrl,
+            maxLength: 30,
+            decoration: const InputDecoration(hintText: '输入新的标题'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, ctrl.text.trim()),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (newTitle == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('class_history') ?? [];
+    final idx = history.indexWhere((jsonStr) {
+      final item = ClassSession.fromJson(jsonDecode(jsonStr));
+      return item.sessionId == session.sessionId;
+    });
+    if (idx == -1) return;
+
+    final old = ClassSession.fromJson(jsonDecode(history[idx]));
+    final updated = old.copyWith(title: newTitle);
+    history[idx] = jsonEncode(updated.toJson());
+    await prefs.setStringList('class_history', history);
+    await _loadHistory();
+  }
 
   @override
   void initState() {
@@ -1358,12 +1453,121 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Future<void> _loadHistory() async {
     final prefs = await SharedPreferences.getInstance();
-    List<String> savedJsonList = prefs.getStringList('class_history') ?? [];
+    final savedJsonList = prefs.getStringList('class_history') ?? [];
     setState(() {
       historyList = savedJsonList
           .map((jsonStr) => ClassSession.fromJson(jsonDecode(jsonStr)))
           .toList();
     });
+    unawaited(_backfillMissingTitles());
+  }
+
+  Future<String> _generateAiTitleForSession(
+    ClassSession session,
+    String apiKey,
+    String llmModel,
+    String customBaseUrl,
+  ) async {
+    final fallback = _fallbackTitle(session);
+    final summaryHint = session.summaries
+        .take(3)
+        .map((e) => e.text.trim())
+        .where((e) => e.isNotEmpty)
+        .join('；');
+    final transcriptHint = session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .take(8)
+        .join(' ');
+
+    try {
+      final response = await http
+          .post(
+            buildOpenAiStyleUri(customBaseUrl, 'chat/completions'),
+            headers: {
+              'Authorization': 'Bearer $apiKey',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'model': llmModel,
+              'temperature': 0.2,
+              'max_tokens': 40,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': '你是课堂记录命名助手。请仅输出一个简洁标题，不超过18个中文字符，不要引号，不要句号。',
+                },
+                {
+                  'role': 'user',
+                  'content':
+                      '课程：${session.subject}\n要点：$summaryHint\n片段：$transcriptHint',
+                },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode != 200) return fallback;
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final raw =
+          data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+      final cleaned = raw
+          .replaceAll('\n', ' ')
+          .replaceAll('"', '')
+          .replaceAll('“', '')
+          .replaceAll('”', '')
+          .trim();
+      if (cleaned.isEmpty) return fallback;
+      return cleaned.length > 18 ? cleaned.substring(0, 18) : cleaned;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  Future<void> _backfillMissingTitles() async {
+    if (_isBackfillingTitles) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString('silicon_api_key') ?? '';
+    if (apiKey.trim().isEmpty) return;
+
+    final llmModel = prefs.getString('llm_model') ?? defaultLlmModel;
+    final customBaseUrl = prefs.getString('custom_base_url') ?? '';
+    final history = prefs.getStringList('class_history') ?? [];
+
+    final indexes = <int>[];
+    for (int i = 0; i < history.length; i++) {
+      final item = ClassSession.fromJson(jsonDecode(history[i]));
+      if (item.title.trim().isEmpty) {
+        indexes.add(i);
+      }
+    }
+    if (indexes.isEmpty) return;
+
+    _isBackfillingTitles = true;
+    try {
+      for (final idx in indexes) {
+        final old = ClassSession.fromJson(jsonDecode(history[idx]));
+        final aiTitle = await _generateAiTitleForSession(
+          old,
+          apiKey,
+          llmModel,
+          customBaseUrl,
+        );
+        final updated = old.copyWith(title: aiTitle);
+        history[idx] = jsonEncode(updated.toJson());
+      }
+      await prefs.setStringList('class_history', history);
+      if (!mounted) return;
+      setState(() {
+        historyList = history
+            .map((jsonStr) => ClassSession.fromJson(jsonDecode(jsonStr)))
+            .toList();
+      });
+    } finally {
+      _isBackfillingTitles = false;
+    }
   }
 
   Future<void> _retryPendingTasks() async {
@@ -1459,7 +1663,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           child: Container(
                             margin: const EdgeInsets.only(bottom: 16),
                             child: GlassmorphismContainer(
-                              height: double.infinity,
                               padding: const EdgeInsets.all(16),
                               borderColor: Colors.cyanAccent.withOpacity(0.2),
                               child: Column(
@@ -1470,14 +1673,58 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(
-                                        session.subject,
-                                        style: const TextStyle(
-                                          color: Colors.amber,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
+                                      Expanded(
+                                        child: Text(
+                                          _displayTitle(session),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.amber,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16,
+                                          ),
                                         ),
                                       ),
+                                      const SizedBox(width: 8),
+                                      IconButton(
+                                        tooltip: '修改标题',
+                                        icon: const Icon(
+                                          Icons.edit,
+                                          color: Colors.cyanAccent,
+                                          size: 18,
+                                        ),
+                                        onPressed: () =>
+                                            _renameSessionTitle(session),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.menu_book_rounded,
+                                        size: 14,
+                                        color: Colors.white54,
+                                      ),
+                                      const SizedBox(width: 5),
+                                      Expanded(
+                                        child: Text(
+                                          session.subject,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      const Icon(
+                                        Icons.schedule,
+                                        size: 14,
+                                        color: Colors.white54,
+                                      ),
+                                      const SizedBox(width: 5),
                                       Text(
                                         session.dateStr,
                                         style: const TextStyle(
@@ -1549,6 +1796,84 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
   final Map<String, bool> _isAnsweringByTaskId = {};
   final Map<String, String> _answerMarkdownByTaskId = {};
   final Map<String, String?> _answerErrorByTaskId = {};
+  String? _manualTitle;
+
+  @override
+  void initState() {
+    super.initState();
+    _manualTitle = widget.session.title.trim().isEmpty
+        ? null
+        : widget.session.title.trim();
+  }
+
+  String get _displayTitle {
+    final current = (_manualTitle ?? widget.session.title).trim();
+    if (current.isNotEmpty) return current;
+    if (widget.session.summaries.isNotEmpty) {
+      final s = widget.session.summaries.first.text.trim();
+      if (s.isNotEmpty) return s.length > 20 ? '${s.substring(0, 20)}...' : s;
+    }
+    final line = widget.session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课程记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '').trim();
+    if (cleaned.isEmpty) return '课程记录';
+    return cleaned.length > 20 ? cleaned.substring(0, 20) : cleaned;
+  }
+
+  Future<void> _editSessionTitle() async {
+    final ctrl = TextEditingController(text: _displayTitle);
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('修改标题'),
+          content: TextField(
+            controller: ctrl,
+            maxLength: 30,
+            decoration: const InputDecoration(hintText: '输入新的标题'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, ctrl.text.trim()),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (newTitle == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList('class_history') ?? [];
+    final idx = history.indexWhere((jsonStr) {
+      final item = ClassSession.fromJson(jsonDecode(jsonStr));
+      return item.sessionId == widget.session.sessionId;
+    });
+    if (idx == -1) return;
+
+    final old = ClassSession.fromJson(jsonDecode(history[idx]));
+    final updated = old.copyWith(title: newTitle);
+    history[idx] = jsonEncode(updated.toJson());
+    await prefs.setStringList('class_history', history);
+
+    if (!mounted) return;
+    setState(() {
+      _manualTitle = newTitle;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('标题已更新'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
   void _showTimelineImagePreview(TimelineNode node) {
     final imagePath = node.imagePath;
@@ -2026,7 +2351,7 @@ $context
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         title: Text(
-          widget.session.subject,
+          _displayTitle,
           style: const TextStyle(fontWeight: FontWeight.w300, fontSize: 16),
         ),
         centerTitle: true,
@@ -2037,6 +2362,11 @@ $context
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
+          IconButton(
+            tooltip: '修改标题',
+            onPressed: _editSessionTitle,
+            icon: const Icon(Icons.edit, color: Colors.cyanAccent),
+          ),
           PopupMenuButton<HistoryExportAction>(
             icon: const Icon(Icons.more_vert, color: Colors.cyanAccent),
             onSelected: (value) {
@@ -2266,6 +2596,10 @@ class LiveScreen extends StatefulWidget {
 
 class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   final AudioRecorder audioRecorder = AudioRecorder();
+  static const int _audioSampleRate = 16000;
+  static const int _audioBytesPerSample = 2;
+  // 仅用于展示“本次预估消费”，具体账单以平台结算页为准。
+  static const double _asrPriceRmbPerMinute = 0.012;
   bool isRecording = false;
   bool isBreakMode = false;
   bool isPowerSavingMode = false;
@@ -2276,6 +2610,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   bool _showStabilityPanel = true;
   bool _isRetryingPending = false;
   int _pendingChunkCount = 0;
+  int _uploadedAudioMs = 0;
   String? _lastPipelineError;
   final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
@@ -2293,11 +2628,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Timer? sliceTimer;
   Timer? _stabilityTimer;
 
-  Duration get _sliceDuration => isPowerSavingMode
-      ? const Duration(seconds: 25)
-      : const Duration(seconds: 15);
+  Duration get _sliceDuration => const Duration(seconds: 15);
 
-  int get _semanticMinLength => isPowerSavingMode ? 120 : 60;
+  int get _semanticMinLength => 60;
 
   @override
   void initState() {
@@ -2567,6 +2900,11 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Future<void> _sendToCloudZeroLoss(List<int> rawPcmData) async {
     Uint8List? wavBytes;
     try {
+      final sampleCount = rawPcmData.length ~/ _audioBytesPerSample;
+      final chunkMs = ((sampleCount * 1000) / _audioSampleRate).round();
+      if (chunkMs > 0) {
+        _uploadedAudioMs += chunkMs;
+      }
       wavBytes = _generateWavHeader(rawPcmData, 16000, 1);
       var request = http.MultipartRequest(
         'POST',
@@ -2988,9 +3326,11 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     try {
       final prefs = await SharedPreferences.getInstance();
       List<String> history = prefs.getStringList('class_history') ?? [];
+      final aiTitle = await _generateSessionTitle();
 
       ClassSession newSession = ClassSession(
         sessionId: _sessionId,
+        title: aiTitle,
         subject: widget.subjectName,
         focusTerms: widget.focusTerms,
         dateStr: DateTime.now().toString().substring(0, 16),
@@ -3006,14 +3346,18 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       await _refreshPendingCount();
 
       if (!_hasConsumedForSession) {
-        final count = (prefs.getInt('lesson_consume_count') ?? 0) + 1;
-        await prefs.setInt('lesson_consume_count', count);
+        final currentCostRmb =
+            (_uploadedAudioMs / 60000.0) * _asrPriceRmbPerMinute;
+        final oldTotalRmb = prefs.getDouble('lesson_total_rmb') ?? 0;
+        await prefs.setDouble('lesson_total_rmb', oldTotalRmb + currentCostRmb);
         _hasConsumedForSession = true;
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('已结算听课 1 次，累计消费 $count 次。'),
+              content: Text(
+                '本次预估消费 ¥${currentCostRmb.toStringAsFixed(4)}（以平台账单为准）',
+              ),
               backgroundColor: Colors.indigo,
               behavior: SnackBarBehavior.floating,
             ),
@@ -3042,16 +3386,104 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     setState(() {
       isPowerSavingMode = !isPowerSavingMode;
     });
-    if (isRecording && !isBreakMode) {
-      _startSliceTimer();
+    if (isPowerSavingMode) {
+      await WakelockPlus.disable();
+    } else if (isRecording) {
+      await WakelockPlus.enable();
     }
+    _showRealtimeStatusSnackBar(
+      isPowerSavingMode ? '省电模式已开启：仅降低手机自身功耗，不影响识别与总结功能。' : '省电模式已关闭。',
+    );
+  }
+
+  Future<String> _generateSessionTitle() async {
+    final fallback = _buildFallbackSessionTitle();
+    if (widget.apiKey.trim().isEmpty) return fallback;
+
+    final summaryHint = aiSummaryCards
+        .take(3)
+        .map((e) => e.text.trim())
+        .where((e) => e.isNotEmpty)
+        .join('；');
+    final transcriptHint = fullTranscript
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .take(8)
+        .join(' ');
+
+    try {
+      final response = await http
+          .post(
+            buildOpenAiStyleUri(widget.customBaseUrl, 'chat/completions'),
+            headers: {
+              'Authorization': 'Bearer ${widget.apiKey}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'model': widget.llmModel,
+              'temperature': 0.2,
+              'max_tokens': 40,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': '你是课堂记录命名助手。请仅输出一个简洁标题，不超过18个中文字符，不要引号，不要句号。',
+                },
+                {
+                  'role': 'user',
+                  'content':
+                      '课程：${widget.subjectName}\n要点：$summaryHint\n片段：$transcriptHint',
+                },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode != 200) return fallback;
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final raw =
+          data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+      final cleaned = raw
+          .replaceAll('\n', ' ')
+          .replaceAll('"', '')
+          .replaceAll('“', '')
+          .replaceAll('”', '')
+          .trim();
+      if (cleaned.isEmpty) return fallback;
+      return cleaned.length > 18 ? cleaned.substring(0, 18) : cleaned;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  String _buildFallbackSessionTitle() {
+    if (aiSummaryCards.isNotEmpty) {
+      final first = aiSummaryCards.first.text.trim();
+      if (first.isNotEmpty) {
+        return first.length > 18 ? first.substring(0, 18) : first;
+      }
+    }
+    final line = fullTranscript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课堂记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '').trim();
+    if (cleaned.isEmpty) return '课堂记录';
+    return cleaned.length > 18 ? cleaned.substring(0, 18) : cleaned;
+  }
+
+  void _showRealtimeStatusSnackBar(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    // 立即清空当前与排队中的提示，确保状态提示始终与最新状态一致。
+    messenger
+      ..clearSnackBars()
+      ..removeCurrentSnackBar();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(
-          isPowerSavingMode ? '省电模式已开启：降低上传频率与推理触发频率。' : '省电模式已关闭。',
-        ),
+        content: Text(message),
         behavior: SnackBarBehavior.floating,
+        duration: const Duration(milliseconds: 900),
       ),
     );
   }
@@ -3068,13 +3500,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       recorderStreamSubscription = null;
       await audioRecorder.stop();
       await _drainAndSendCurrentBuffer();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已进入课间休息，暂不监听；可自由切到其他应用。'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      _showRealtimeStatusSnackBar('已进入课间休息，暂不监听；可自由切到其他应用。');
       return;
     }
 
@@ -3083,13 +3509,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     setState(() {
       isBreakMode = false;
     });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('课间休息结束，已恢复课堂监听。'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    _showRealtimeStatusSnackBar('课间休息结束，已恢复课堂监听。');
   }
 
   Future<void> _exitAndSave() async {
