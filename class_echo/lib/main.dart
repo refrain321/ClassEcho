@@ -40,6 +40,23 @@ class ShadApp {
       appBuilder: (_) => MaterialApp(
         title: title,
         debugShowCheckedModeBanner: debugShowCheckedModeBanner,
+        themeMode: themeMode ?? ThemeMode.dark,
+        theme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: const Color(0xFF0B0D10),
+          canvasColor: const Color(0xFF0B0D10),
+          splashColor: Colors.transparent,
+          highlightColor: Colors.transparent,
+        ),
+        darkTheme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: const Color(0xFF0B0D10),
+          canvasColor: const Color(0xFF0B0D10),
+          splashColor: Colors.transparent,
+          highlightColor: Colors.transparent,
+        ),
         home: home,
       ),
     );
@@ -2390,15 +2407,25 @@ $context
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
+        iconTheme: const IconThemeData(color: Colors.white),
+        actionsIconTheme: const IconThemeData(color: Colors.white),
         title: Text(
           _displayTitle,
-          style: const TextStyle(fontWeight: FontWeight.w300, fontSize: 16),
+          style: const TextStyle(
+            fontWeight: FontWeight.w300,
+            fontSize: 16,
+            color: Colors.white,
+          ),
         ),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            size: 20,
+            color: Colors.white,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
@@ -3631,6 +3658,45 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     Navigator.pop(context);
   }
 
+  Future<void> _exitWithoutSave() async {
+    if (_isStopping) return;
+    _isStopping = true;
+
+    try {
+      if (mounted) {
+        setState(() {
+          isRecording = false;
+          isBreakMode = false;
+          fullTranscript += '\n\n[🛑 已退出（未保存）]';
+        });
+      }
+
+      sliceTimer?.cancel();
+      await recorderStreamSubscription?.cancel();
+      recorderStreamSubscription = null;
+
+      try {
+        await audioRecorder.stop();
+      } catch (_) {
+        // 如果当前未在录音，stop 可能抛异常，这里安全忽略。
+      }
+    } finally {
+      await WakelockPlus.disable();
+      _isStopping = false;
+    }
+
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+
+  Future<void> _requestExit() async {
+    if (!isRecording) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    await _handleBackAttempt();
+  }
+
   Future<bool> _handleBackAttempt() async {
     if (!isRecording) return true;
 
@@ -3649,6 +3715,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
               onPressed: () => Navigator.pop(dialogContext, 'pause_only'),
               child: const Text('仅暂停不结束'),
             ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'exit_no_save'),
+              child: const Text('直接退出不保存'),
+            ),
             ShadButton(
               onPressed: () => Navigator.pop(dialogContext, 'save_exit'),
               child: const Text('保存并退出'),
@@ -3660,6 +3730,8 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
     if (action == 'save_exit') {
       await _exitAndSave();
+    } else if (action == 'exit_no_save') {
+      await _exitWithoutSave();
     } else if (action == 'pause_only' && !isBreakMode) {
       await _toggleBreakMode();
     }
@@ -3865,15 +3937,25 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       child: Scaffold(
         backgroundColor: const Color(0xFF0F172A),
         appBar: AppBar(
+          iconTheme: const IconThemeData(color: Colors.white),
+          actionsIconTheme: const IconThemeData(color: Colors.white),
           title: Text(
             '${widget.subjectName} | ${isBreakMode ? "☕ 课间休息" : (isRecording ? "🔴 监听中" : "已暂停")}',
-            style: const TextStyle(fontWeight: FontWeight.w300, fontSize: 16),
+            style: const TextStyle(
+              fontWeight: FontWeight.w300,
+              fontSize: 16,
+              color: Colors.white,
+            ),
           ),
           centerTitle: true,
           backgroundColor: Colors.transparent,
           elevation: 0,
           leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+            icon: const Icon(
+              Icons.arrow_back_ios_new,
+              size: 20,
+              color: Colors.white,
+            ),
             onPressed: _handleBackAttempt,
           ),
           actions: [
@@ -3905,9 +3987,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                 onPressed: _showSnapshotSourceSheet,
               ),
             IconButton(
-              icon: const Icon(Icons.exit_to_app),
+              icon: const Icon(Icons.exit_to_app, color: Colors.white),
               tooltip: '保存并退出',
-              onPressed: _exitAndSave,
+              onPressed: _requestExit,
             ),
             Padding(
               padding: const EdgeInsets.only(right: 15),
