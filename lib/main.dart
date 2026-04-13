@@ -13,6 +13,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'widgets/enhanced_markdown_view.dart';
 
 void main() {
@@ -23,6 +24,9 @@ const String defaultAsrModel = 'FunAudioLLM/SenseVoiceSmall';
 const String defaultLlmModel = 'deepseek-ai/DeepSeek-V3.2';
 const String defaultVisionModel = 'Qwen/Qwen3-VL-32B-Instruct';
 const String defaultApiBaseUrl = 'https://api.siliconflow.cn';
+const String prefEnableContextCorrection = 'enable_context_correction';
+const String prefEnableCardMerge = 'enable_card_merge';
+const String prefShowStabilityPanel = 'show_stability_panel';
 
 const Map<String, String> asrModelDescriptions = {
   'FunAudioLLM/SenseVoiceSmall': '中文识别稳定，延迟低，适合课堂实时转写。',
@@ -852,6 +856,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController baseUrlController;
   late String selectedAsrModel;
   late String selectedLlmModel;
+  bool enableContextCorrection = true;
+  bool enableCardMerge = true;
+  bool showStabilityPanel = true;
 
   @override
   void initState() {
@@ -860,6 +867,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     baseUrlController = TextEditingController(text: widget.currentBaseUrl);
     selectedAsrModel = widget.currentAsrModel;
     selectedLlmModel = widget.currentLlmModel;
+    _loadAdvancedToggles();
+  }
+
+  Future<void> _loadAdvancedToggles() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      enableContextCorrection =
+          prefs.getBool(prefEnableContextCorrection) ?? true;
+      enableCardMerge = prefs.getBool(prefEnableCardMerge) ?? true;
+      showStabilityPanel = prefs.getBool(prefShowStabilityPanel) ?? true;
+    });
   }
 
   @override
@@ -1011,6 +1030,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: const TextStyle(fontSize: 12, color: Colors.white60),
             ),
             const SizedBox(height: 20),
+            SwitchListTile(
+              value: enableContextCorrection,
+              onChanged: (value) {
+                setState(() => enableContextCorrection = value);
+              },
+              activeColor: Colors.cyanAccent,
+              title: const Text(
+                '开启转写上下文纠错',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'ASR 结果会结合最近语境和核心词汇自动修正错字',
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile(
+              value: enableCardMerge,
+              onChanged: (value) {
+                setState(() => enableCardMerge = value);
+              },
+              activeColor: Colors.cyanAccent,
+              title: const Text(
+                '开启跨卡片断句修复',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                '自动判断上下卡片是否断裂并拼接',
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile(
+              value: showStabilityPanel,
+              onChanged: (value) {
+                setState(() => showStabilityPanel = value);
+              },
+              activeColor: Colors.cyanAccent,
+              title: const Text(
+                '显示稳定性看板',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                '展示离线队列、缓冲区和传输状态',
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+            ),
+            const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               height: 50,
@@ -1026,9 +1093,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   widget.onApiKeySaved(keyController.text.trim());
                   widget.onModelsSaved(selectedAsrModel, selectedLlmModel);
                   widget.onBaseUrlSaved(baseUrlController.text.trim());
+                  SharedPreferences.getInstance().then((prefs) async {
+                    await prefs.setBool(
+                      prefEnableContextCorrection,
+                      enableContextCorrection,
+                    );
+                    await prefs.setBool(prefEnableCardMerge, enableCardMerge);
+                    await prefs.setBool(
+                      prefShowStabilityPanel,
+                      showStabilityPanel,
+                    );
+                  });
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('✅ 密钥、模型与 Base URL 配置已保存！'),
+                      content: Text('✅ 配置与高级开关已保存！'),
                       backgroundColor: Colors.green,
                     ),
                   );
@@ -2186,9 +2264,18 @@ class LiveScreen extends StatefulWidget {
   State<LiveScreen> createState() => _LiveScreenState();
 }
 
-class _LiveScreenState extends State<LiveScreen> {
+class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   final AudioRecorder audioRecorder = AudioRecorder();
   bool isRecording = false;
+  bool isBreakMode = false;
+  bool isPowerSavingMode = false;
+  bool _isStopping = false;
+  bool _hasConsumedForSession = false;
+  bool _enableContextCorrection = true;
+  bool _enableCardMerge = true;
+  bool _showStabilityPanel = true;
+  bool _isRetryingPending = false;
+  int _pendingChunkCount = 0;
   String? _lastPipelineError;
   final String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
 
@@ -2204,11 +2291,76 @@ class _LiveScreenState extends State<LiveScreen> {
   StreamSubscription<List<int>>? recorderStreamSubscription;
   List<int> mainAudioBuffer = [];
   Timer? sliceTimer;
+  Timer? _stabilityTimer;
+
+  Duration get _sliceDuration => isPowerSavingMode
+      ? const Duration(seconds: 25)
+      : const Duration(seconds: 15);
+
+  int get _semanticMinLength => isPowerSavingMode ? 120 : 60;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadRuntimePreferences();
+    _startStabilityRefreshLoop();
     _initAndStartContinuousPipeline();
+  }
+
+  Future<void> _loadRuntimePreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _enableContextCorrection =
+          prefs.getBool(prefEnableContextCorrection) ?? true;
+      _enableCardMerge = prefs.getBool(prefEnableCardMerge) ?? true;
+      _showStabilityPanel = prefs.getBool(prefShowStabilityPanel) ?? true;
+    });
+  }
+
+  void _startStabilityRefreshLoop() {
+    _refreshPendingCount();
+    _stabilityTimer?.cancel();
+    _stabilityTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+      unawaited(_refreshPendingCount());
+    });
+  }
+
+  Future<void> _refreshPendingCount() async {
+    final count = await PendingAudioTaskStore.instance.countPending();
+    if (!mounted) return;
+    setState(() => _pendingChunkCount = count);
+  }
+
+  Future<void> _retryPendingInBackground() async {
+    if (_isRetryingPending) return;
+    setState(() => _isRetryingPending = true);
+    try {
+      await PendingAudioRetryService.retryAllPendingTasks();
+      await _refreshPendingCount();
+    } finally {
+      if (mounted) {
+        setState(() => _isRetryingPending = false);
+      }
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!isRecording) return;
+
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      sliceTimer?.cancel();
+      unawaited(_drainAndSendCurrentBuffer());
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed && !isBreakMode) {
+      _startSliceTimer();
+      unawaited(_retryPendingInBackground());
+    }
   }
 
   void _appendTranscriptSegment(TranscriptSegment segment) {
@@ -2278,6 +2430,12 @@ class _LiveScreenState extends State<LiveScreen> {
       aiSummaryCards.add(SummaryCard(text: "正在等待更多课堂内容以生成首条要点。"));
     });
 
+    await WakelockPlus.enable();
+    await _startRecorderStream();
+    _startSliceTimer();
+  }
+
+  Future<void> _startRecorderStream() async {
     const config = RecordConfig(
       encoder: AudioEncoder.pcm16bits,
       sampleRate: 16000,
@@ -2286,19 +2444,25 @@ class _LiveScreenState extends State<LiveScreen> {
     final Stream<List<int>> audioStream = await audioRecorder.startStream(
       config,
     );
-
     recorderStreamSubscription = audioStream.listen(
       (data) => mainAudioBuffer.addAll(data),
     );
+  }
 
-    sliceTimer = Timer.periodic(const Duration(seconds: 15), (timer) async {
-      if (mainAudioBuffer.isEmpty) return;
-      List<int> chunkToSend = List.from(mainAudioBuffer);
-      mainAudioBuffer.clear();
-      if (chunkToSend.isNotEmpty) {
-        _sendToCloudZeroLoss(chunkToSend);
-      }
+  void _startSliceTimer() {
+    sliceTimer?.cancel();
+    sliceTimer = Timer.periodic(_sliceDuration, (timer) {
+      unawaited(_drainAndSendCurrentBuffer());
     });
+  }
+
+  Future<void> _drainAndSendCurrentBuffer() async {
+    if (mainAudioBuffer.isEmpty || !isRecording) return;
+    final chunkToSend = List<int>.from(mainAudioBuffer);
+    mainAudioBuffer.clear();
+    if (chunkToSend.isNotEmpty) {
+      await _sendToCloudZeroLoss(chunkToSend);
+    }
   }
 
   Future<String> _persistPickedImage(XFile file) async {
@@ -2419,6 +2583,9 @@ class _LiveScreenState extends State<LiveScreen> {
 
       if (response.statusCode == 200) {
         String text = jsonDecode(responseData)['text'].toString().trim();
+        if (_enableContextCorrection) {
+          text = await _repairTranscriptByContext(text);
+        }
         if (text.isNotEmpty && mounted) {
           final segment = TranscriptSegment(
             timestampMs: DateTime.now().millisecondsSinceEpoch,
@@ -2461,6 +2628,56 @@ class _LiveScreenState extends State<LiveScreen> {
     }
   }
 
+  Future<String> _repairTranscriptByContext(String rawText) async {
+    final cleaned = rawText.trim();
+    if (cleaned.isEmpty) return cleaned;
+
+    final recent = transcriptSegments.reversed
+        .take(4)
+        .toList()
+        .reversed
+        .map((e) => e.text)
+        .join(' ');
+
+    try {
+      final response = await http
+          .post(
+            buildOpenAiStyleUri(widget.customBaseUrl, 'chat/completions'),
+            headers: {
+              'Authorization': 'Bearer ${widget.apiKey}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'model': widget.llmModel,
+              'temperature': 0,
+              'max_tokens': 100,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content':
+                      '你是课堂语音转写纠错器。仅修正明显错字/同音词，不改变原意，不扩写，不解释。只返回修正后的单句文本。',
+                },
+                {
+                  'role': 'user',
+                  'content':
+                      '课程：${widget.subjectName}\n核心词汇：${widget.focusTerms}\n上文：$recent\n当前句：$cleaned',
+                },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode != 200) return cleaned;
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final fixed =
+          data['choices']?[0]?['message']?['content']?.toString().trim() ??
+          cleaned;
+      return fixed.isEmpty ? cleaned : fixed;
+    } catch (_) {
+      return cleaned;
+    }
+  }
+
   void _checkSemanticTrigger() {
     bool hasPunctuation =
         semanticBuffer.endsWith('。') ||
@@ -2472,11 +2689,71 @@ class _LiveScreenState extends State<LiveScreen> {
         semanticBuffer.contains('总之') ||
         semanticBuffer.contains('另外');
 
-    if (semanticBuffer.length > 60 && (hasPunctuation || hasTransition)) {
+    if (semanticBuffer.length > _semanticMinLength &&
+        (hasPunctuation || hasTransition)) {
       final textToSummarize = semanticBuffer;
       final nodesToSummarize = List<TimelineNode>.from(semanticWindowNodes);
       _clearSemanticWindow();
       _callLLMBrain(textToSummarize, nodesToSummarize);
+    }
+  }
+
+  List<String> _extractSummaryUnits(String summary) {
+    final lines = summary
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .where((e) => !e.startsWith('【核心考点】'))
+        .where((e) => !e.startsWith('【细节】'))
+        .toList();
+
+    final units = <String>[];
+    for (final line in lines) {
+      final normalized = line.replaceFirst(RegExp(r'^[-•\d\.\s]+'), '').trim();
+      if (normalized.isEmpty) continue;
+      if (normalized.length <= 38) {
+        units.add(normalized);
+        continue;
+      }
+
+      final parts = normalized
+          .split(RegExp(r'(?<=[。！？；;])\s*'))
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty);
+      units.addAll(parts);
+    }
+
+    return units;
+  }
+
+  bool _looksLikeContinuation(String prev, String curr) {
+    const weakEndings = ['的', '了', '和', '与', '及', '在', '对', '把', '将'];
+    const continueStarts = ['并且', '并', '而且', '同时', '其中', '然后', '因此', '所以'];
+
+    if (prev.isEmpty || curr.isEmpty) return false;
+    final prevLast = prev.substring(prev.length - 1);
+    final prevNoEndPunc = !'。！？；.!?;'.contains(prevLast);
+    final currStartsWithConnector = continueStarts.any(
+      (w) => curr.startsWith(w),
+    );
+    final prevEndsWeak = weakEndings.any((w) => prev.endsWith(w));
+    return prevNoEndPunc || currStartsWithConnector || prevEndsWeak;
+  }
+
+  void _insertSummaryCardsWithContext(String summary) {
+    final units = _extractSummaryUnits(summary);
+    if (units.isEmpty) {
+      aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+      return;
+    }
+
+    for (final unit in units.reversed) {
+      if (aiSummaryCards.isNotEmpty &&
+          _looksLikeContinuation(unit, aiSummaryCards.first.text)) {
+        aiSummaryCards.first.text = '$unit${aiSummaryCards.first.text}';
+      } else {
+        aiSummaryCards.insert(0, SummaryCard(text: unit));
+      }
     }
   }
 
@@ -2552,7 +2829,11 @@ class _LiveScreenState extends State<LiveScreen> {
                 aiSummaryCards[0].text.contains("正在等待")) {
               aiSummaryCards.clear();
             }
-            aiSummaryCards.insert(0, SummaryCard(text: summary));
+            if (_enableCardMerge) {
+              _insertSummaryCardsWithContext(summary);
+            } else {
+              aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+            }
             _lastPipelineError = null;
           });
         }
@@ -2628,7 +2909,11 @@ class _LiveScreenState extends State<LiveScreen> {
                 aiSummaryCards[0].text.contains('正在等待')) {
               aiSummaryCards.clear();
             }
-            aiSummaryCards.insert(0, SummaryCard(text: summary));
+            if (_enableCardMerge) {
+              _insertSummaryCardsWithContext(summary);
+            } else {
+              aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+            }
             _lastPipelineError = null;
           });
         }
@@ -2674,12 +2959,17 @@ class _LiveScreenState extends State<LiveScreen> {
   }
 
   Future<void> _stopContinuousPipeline() async {
+    if (_isStopping) return;
+    _isStopping = true;
+
     setState(() {
       isRecording = false;
+      isBreakMode = false;
       fullTranscript += "\n\n[🛑 监听已结束]";
     });
     sliceTimer?.cancel();
-    recorderStreamSubscription?.cancel();
+    await recorderStreamSubscription?.cancel();
+    recorderStreamSubscription = null;
     await audioRecorder.stop();
 
     if (mainAudioBuffer.isNotEmpty) {
@@ -2713,6 +3003,23 @@ class _LiveScreenState extends State<LiveScreen> {
 
       history.insert(0, jsonEncode(newSession.toJson()));
       await prefs.setStringList('class_history', history);
+      await _refreshPendingCount();
+
+      if (!_hasConsumedForSession) {
+        final count = (prefs.getInt('lesson_consume_count') ?? 0) + 1;
+        await prefs.setInt('lesson_consume_count', count);
+        _hasConsumedForSession = true;
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已结算听课 1 次，累计消费 $count 次。'),
+              backgroundColor: Colors.indigo,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2725,13 +3032,117 @@ class _LiveScreenState extends State<LiveScreen> {
       }
     } catch (e) {
       debugPrint('保存课堂记录失败: $e');
+    } finally {
+      await WakelockPlus.disable();
+      _isStopping = false;
     }
+  }
+
+  Future<void> _togglePowerSavingMode() async {
+    setState(() {
+      isPowerSavingMode = !isPowerSavingMode;
+    });
+    if (isRecording && !isBreakMode) {
+      _startSliceTimer();
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          isPowerSavingMode ? '省电模式已开启：降低上传频率与推理触发频率。' : '省电模式已关闭。',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _toggleBreakMode() async {
+    if (!isRecording) return;
+
+    if (!isBreakMode) {
+      setState(() {
+        isBreakMode = true;
+      });
+      sliceTimer?.cancel();
+      await recorderStreamSubscription?.cancel();
+      recorderStreamSubscription = null;
+      await audioRecorder.stop();
+      await _drainAndSendCurrentBuffer();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已进入课间休息，暂不监听；可自由切到其他应用。'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    await _startRecorderStream();
+    _startSliceTimer();
+    setState(() {
+      isBreakMode = false;
+    });
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('课间休息结束，已恢复课堂监听。'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  Future<void> _exitAndSave() async {
+    if (_isStopping) return;
+    if (isRecording) {
+      await _stopContinuousPipeline();
+    }
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+
+  Future<bool> _handleBackAttempt() async {
+    if (!isRecording) return true;
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('结束本节课？'),
+          content: const Text('退出前建议先保存本节内容到历史记录。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'cancel'),
+              child: const Text('继续上课'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'pause_only'),
+              child: const Text('仅暂停不结束'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, 'save_exit'),
+              child: const Text('保存并退出'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (action == 'save_exit') {
+      await _exitAndSave();
+    } else if (action == 'pause_only' && !isBreakMode) {
+      await _toggleBreakMode();
+    }
+    return false;
   }
 
   @override
   void dispose() {
     sliceTimer?.cancel();
+    _stabilityTimer?.cancel();
     recorderStreamSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(WakelockPlus.disable());
     audioRecorder.dispose();
     super.dispose();
   }
@@ -2791,203 +3202,276 @@ class _LiveScreenState extends State<LiveScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
-      appBar: AppBar(
-        title: Text(
-          '${widget.subjectName} | ${isRecording ? "🔴 监听中" : "已暂停"}',
-          style: const TextStyle(fontWeight: FontWeight.w300, fontSize: 16),
-        ),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, size: 20),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 15),
-            child: GestureDetector(
-              onTap: _showBountyBoard,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  const Icon(
-                    Icons.assignment_late_outlined,
-                    size: 28,
-                    color: Colors.amber,
-                  ),
-                  if (bountyTasks.isNotEmpty)
-                    Positioned(
-                      top: 10,
-                      right: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(
-                          color: Colors.redAccent,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          '${bountyTasks.length}',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
+    return WillPopScope(
+      onWillPop: _handleBackAttempt,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F172A),
+        appBar: AppBar(
+          title: Text(
+            '${widget.subjectName} | ${isBreakMode ? "☕ 课间休息" : (isRecording ? "🔴 监听中" : "已暂停")}',
+            style: const TextStyle(fontWeight: FontWeight.w300, fontSize: 16),
           ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.only(left: 16, right: 16, bottom: 90),
-        child: Column(
-          children: [
-            Expanded(
-              flex: 4,
-              child: GlassmorphismContainer(
-                padding: const EdgeInsets.all(16),
-                child: SingleChildScrollView(
-                  reverse: true,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: buildTimelineWidgets(
-                      timelineNodes,
-                      onImageTap: _showImagePreview,
+          centerTitle: true,
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+            onPressed: _handleBackAttempt,
+          ),
+          actions: [
+            IconButton(
+              icon: Icon(
+                isPowerSavingMode ? Icons.battery_saver : Icons.battery_6_bar,
+                color: isPowerSavingMode
+                    ? Colors.lightGreenAccent
+                    : Colors.white70,
+              ),
+              tooltip: '省电模式',
+              onPressed: _togglePowerSavingMode,
+            ),
+            IconButton(
+              icon: Icon(
+                isBreakMode ? Icons.play_circle_outline : Icons.free_breakfast,
+                color: Colors.orangeAccent,
+              ),
+              tooltip: isBreakMode ? '结束课间休息' : '课间休息',
+              onPressed: _toggleBreakMode,
+            ),
+            if (isRecording)
+              IconButton(
+                icon: const Icon(
+                  Icons.photo_camera_outlined,
+                  color: Colors.cyanAccent,
+                ),
+                tooltip: '拍照/相册',
+                onPressed: _showSnapshotSourceSheet,
+              ),
+            IconButton(
+              icon: const Icon(Icons.exit_to_app),
+              tooltip: '保存并退出',
+              onPressed: _exitAndSave,
+            ),
+            Padding(
+              padding: const EdgeInsets.only(right: 15),
+              child: GestureDetector(
+                onTap: _showBountyBoard,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    const Icon(
+                      Icons.assignment_late_outlined,
+                      size: 28,
+                      color: Colors.amber,
+                    ),
+                    if (bountyTasks.isNotEmpty)
+                      Positioned(
+                        top: 10,
+                        right: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Colors.redAccent,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Text(
+                            '${bountyTasks.length}',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        body: Padding(
+          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 90),
+          child: Column(
+            children: [
+              Expanded(
+                flex: 4,
+                child: GlassmorphismContainer(
+                  padding: const EdgeInsets.all(16),
+                  child: SingleChildScrollView(
+                    reverse: true,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: buildTimelineWidgets(
+                        timelineNodes,
+                        onImageTap: _showImagePreview,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              flex: 5,
-              child: GlassmorphismContainer(
-                padding: const EdgeInsets.all(16),
-                child: ListView.builder(
-                  itemCount: displayedCards.length,
-                  itemBuilder: (context, index) {
-                    var card = displayedCards[index];
-                    return GestureDetector(
-                      onTap: () => setState(
-                        () => card.isHighlighted = !card.isHighlighted,
-                      ),
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: card.isHighlighted
-                              ? Colors.amber.withOpacity(0.15)
-                              : Colors.purpleAccent.withOpacity(0.05),
-                          border: Border.all(
-                            color: card.isHighlighted
-                                ? Colors.amber
-                                : Colors.purpleAccent.withOpacity(0.3),
-                          ),
-                          borderRadius: BorderRadius.circular(12),
+              const SizedBox(height: 16),
+              Expanded(
+                flex: 5,
+                child: GlassmorphismContainer(
+                  padding: const EdgeInsets.all(16),
+                  child: ListView.builder(
+                    itemCount: displayedCards.length,
+                    itemBuilder: (context, index) {
+                      var card = displayedCards[index];
+                      return GestureDetector(
+                        onTap: () => setState(
+                          () => card.isHighlighted = !card.isHighlighted,
                         ),
-                        child: Text(
-                          card.text,
-                          style: TextStyle(
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
                             color: card.isHighlighted
-                                ? Colors.white
-                                : Colors.white70,
+                                ? Colors.amber.withOpacity(0.15)
+                                : Colors.purpleAccent.withOpacity(0.05),
+                            border: Border.all(
+                              color: card.isHighlighted
+                                  ? Colors.amber
+                                  : Colors.purpleAccent.withOpacity(0.3),
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            card.text,
+                            style: TextStyle(
+                              color: card.isHighlighted
+                                  ? Colors.white
+                                  : Colors.white70,
+                            ),
                           ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
-            ),
-            if (_lastPipelineError != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                _lastPipelineError!,
-                style: const TextStyle(
-                  color: Colors.orangeAccent,
-                  fontSize: 12,
+              if (_lastPipelineError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _lastPipelineError!,
+                  style: const TextStyle(
+                    color: Colors.orangeAccent,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              if (_showStabilityPanel) ...[
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '稳定性：离线队列 $_pendingChunkCount | 缓冲 ${mainAudioBuffer.length ~/ 1024} KB | ${_isRetryingPending ? "重试中" : "稳定"}',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _isRetryingPending
+                            ? null
+                            : _retryPendingInBackground,
+                        child: const Text('立即补偿'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+        floatingActionButton: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Stack(
+            alignment: Alignment.bottomCenter,
+            children: [
+              Visibility(
+                visible: isRecording,
+                child: GestureDetector(
+                  onTap: _exitAndSave,
+                  child: GlassmorphismContainer(
+                    width: 60,
+                    height: 60,
+                    borderRadius: 30,
+                    borderColor: Colors.redAccent.withOpacity(0.5),
+                    backgroundColor: Colors.redAccent.withOpacity(0.1),
+                    child: const Center(
+                      child: Icon(
+                        Icons.stop,
+                        size: 30,
+                        color: Colors.redAccent,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 0,
+                bottom: 0,
+                child: Visibility(
+                  visible: isRecording,
+                  child: GestureDetector(
+                    onTap: _showSnapshotSourceSheet,
+                    child: GlassmorphismContainer(
+                      width: 60,
+                      height: 60,
+                      borderRadius: 30,
+                      borderColor: Colors.cyanAccent.withOpacity(0.7),
+                      backgroundColor: Colors.cyanAccent.withOpacity(0.12),
+                      child: const Center(
+                        child: Icon(
+                          Icons.photo_camera_outlined,
+                          size: 28,
+                          color: Colors.cyanAccent,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Visibility(
+                  visible: isRecording,
+                  child: GestureDetector(
+                    onTap: _createBountyTask,
+                    child: GlassmorphismContainer(
+                      width: 60,
+                      height: 60,
+                      borderRadius: 30,
+                      borderColor: Colors.redAccent.withOpacity(0.8),
+                      backgroundColor: Colors.redAccent.withOpacity(0.2),
+                      child: const Center(
+                        child: Icon(
+                          Icons.crisis_alert,
+                          size: 30,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ],
-          ],
-        ),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Stack(
-          alignment: Alignment.bottomCenter,
-          children: [
-            Visibility(
-              visible: isRecording,
-              child: GestureDetector(
-                onTap: _stopContinuousPipeline,
-                child: GlassmorphismContainer(
-                  width: 60,
-                  height: 60,
-                  borderRadius: 30,
-                  borderColor: Colors.redAccent.withOpacity(0.5),
-                  backgroundColor: Colors.redAccent.withOpacity(0.1),
-                  child: const Center(
-                    child: Icon(Icons.stop, size: 30, color: Colors.redAccent),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: 0,
-              bottom: 0,
-              child: Visibility(
-                visible: isRecording,
-                child: GestureDetector(
-                  onTap: _showSnapshotSourceSheet,
-                  child: GlassmorphismContainer(
-                    width: 60,
-                    height: 60,
-                    borderRadius: 30,
-                    borderColor: Colors.cyanAccent.withOpacity(0.7),
-                    backgroundColor: Colors.cyanAccent.withOpacity(0.12),
-                    child: const Center(
-                      child: Icon(
-                        Icons.photo_camera_outlined,
-                        size: 28,
-                        color: Colors.cyanAccent,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: Visibility(
-                visible: isRecording,
-                child: GestureDetector(
-                  onTap: _createBountyTask,
-                  child: GlassmorphismContainer(
-                    width: 60,
-                    height: 60,
-                    borderRadius: 30,
-                    borderColor: Colors.redAccent.withOpacity(0.8),
-                    backgroundColor: Colors.redAccent.withOpacity(0.2),
-                    child: const Center(
-                      child: Icon(
-                        Icons.crisis_alert,
-                        size: 30,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
