@@ -17,6 +17,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:shadcn_ui/shadcn_ui.dart' as shad;
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_highlight/themes/atom-one-dark.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'widgets/enhanced_markdown_view.dart';
 
 typedef ShadThemeData = shad.ShadThemeData;
@@ -230,79 +232,189 @@ List<Widget> buildTimelineWidgets(
   final sorted = [...nodes]
     ..sort((a, b) => a.timestampMs.compareTo(b.timestampMs));
   return sorted.map((node) {
-    final time = formatTimeForTranscript(node.timestampMs);
-    if (node.type == TimelineNodeType.image) {
-      final imagePath = node.imagePath ?? '';
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '[$time] ${node.imageLabel?.trim().isNotEmpty == true ? node.imageLabel!.trim() : '白板快照'}',
-              style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
-            ),
-            const SizedBox(height: 6),
-            GestureDetector(
-              onTap: () => onImageTap(node),
-              onLongPress: onImageLongPress == null
-                  ? null
-                  : () => onImageLongPress(node),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.white24),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: imagePath.isEmpty
-                      ? Container(
+    return buildTimelineNodeWidget(
+      node,
+      onImageTap: onImageTap,
+      onImageLongPress: onImageLongPress,
+    );
+  }).toList();
+}
+
+Widget buildTimelineNodeWidget(
+  TimelineNode node, {
+  required void Function(TimelineNode node) onImageTap,
+  void Function(TimelineNode node)? onImageLongPress,
+  bool isHighlighted = false,
+}) {
+  final time = formatTimeForTranscript(node.timestampMs);
+  if (node.type == TimelineNodeType.image) {
+    final imagePath = node.imagePath ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '[$time] ${node.imageLabel?.trim().isNotEmpty == true ? node.imageLabel!.trim() : '白板快照'}',
+            style: const TextStyle(color: Colors.cyanAccent, fontSize: 12),
+          ),
+          const SizedBox(height: 6),
+          GestureDetector(
+            onTap: () => onImageTap(node),
+            onLongPress: onImageLongPress == null
+                ? null
+                : () => onImageLongPress(node),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white24),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: imagePath.isEmpty
+                    ? Container(
+                        height: 140,
+                        color: Colors.white10,
+                        alignment: Alignment.center,
+                        child: const Text(
+                          '图片缺失',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      )
+                    : Image.file(
+                        File(imagePath),
+                        height: 140,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
                           height: 140,
                           color: Colors.white10,
                           alignment: Alignment.center,
                           child: const Text(
-                            '图片缺失',
+                            '图片无法加载',
                             style: TextStyle(color: Colors.white54),
                           ),
-                        )
-                      : Image.file(
-                          File(imagePath),
-                          height: 140,
-                          width: double.infinity,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Container(
-                                height: 140,
-                                color: Colors.white10,
-                                alignment: Alignment.center,
-                                child: const Text(
-                                  '图片无法加载',
-                                  style: TextStyle(color: Colors.white54),
-                                ),
-                              ),
                         ),
-                ),
+                      ),
               ),
             ),
-          ],
-        ),
-      );
-    }
+          ),
+        ],
+      ),
+    );
+  }
 
-    final text = (node.text ?? '').trim();
-    if (text.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+  final text = (node.text ?? '').trim();
+  if (text.isEmpty) return const SizedBox.shrink();
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        gradient: isHighlighted
+            ? const LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [Color(0x3322C55E), Color(0x11000000)],
+              )
+            : null,
+        color: isHighlighted ? const Color(0x2211AA55) : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        border: isHighlighted
+            ? Border.all(color: const Color(0x5534D399))
+            : null,
+      ),
       child: Text(
         '[$time] $text',
-        style: const TextStyle(
-          color: Colors.white70,
+        style: TextStyle(
+          color: isHighlighted ? Colors.white : Colors.white70,
           fontSize: 15,
           height: 1.55,
         ),
       ),
+    ),
+  );
+}
+
+const String _emptyBoxSvg = '''
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <rect x="18" y="28" width="60" height="40" rx="10" stroke="currentColor" stroke-width="3"/>
+  <path d="M18 40h60M36 28v40M60 28v40" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+</svg>
+''';
+
+const String _emptyMicSvg = '''
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <rect x="36" y="14" width="24" height="42" rx="12" stroke="currentColor" stroke-width="3"/>
+  <path d="M28 42v6a20 20 0 0 0 40 0v-6" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+  <path d="M48 62v14M36 76h24" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+</svg>
+''';
+
+class EmptyStateView extends StatelessWidget {
+  final String title;
+  final String description;
+  final String actionLabel;
+  final VoidCallback onAction;
+  final String iconSvg;
+
+  const EmptyStateView({
+    super.key,
+    required this.title,
+    required this.description,
+    required this.actionLabel,
+    required this.onAction,
+    required this.iconSvg,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SizedBox(
+        width: double.infinity,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SvgPicture.string(
+              iconSvg,
+              width: 88,
+              height: 88,
+              colorFilter: const ColorFilter.mode(
+                Color(0xFF9CA3AF),
+                BlendMode.srcIn,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFFE5E7EB),
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              description,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF9CA3AF),
+                fontSize: 13,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 18),
+            ShadButton(onPressed: onAction, child: Text(actionLabel)),
+          ],
+        ),
+      ),
     );
-  }).toList();
+  }
 }
 
 class CodeSnippetViewModel {
@@ -599,16 +711,28 @@ class PendingAudioRetryService {
 class SummaryCard {
   String text; // 改为非 final，以便后续编辑修改
   bool isHighlighted;
-  SummaryCard({required this.text, this.isHighlighted = false});
+  final int? sourceStartTimestampMs;
+  final int? sourceEndTimestampMs;
+
+  SummaryCard({
+    required this.text,
+    this.isHighlighted = false,
+    this.sourceStartTimestampMs,
+    this.sourceEndTimestampMs,
+  });
 
   Map<String, dynamic> toJson() => {
     'text': text,
     'isHighlighted': isHighlighted,
+    'sourceStartTimestampMs': sourceStartTimestampMs,
+    'sourceEndTimestampMs': sourceEndTimestampMs,
   };
 
   factory SummaryCard.fromJson(Map<String, dynamic> json) => SummaryCard(
     text: json['text'],
     isHighlighted: json['isHighlighted'] ?? false,
+    sourceStartTimestampMs: json['sourceStartTimestampMs'] as int?,
+    sourceEndTimestampMs: json['sourceEndTimestampMs'] as int?,
   );
 }
 
@@ -840,6 +964,14 @@ class _MainNavigatorState extends State<MainNavigator> {
     });
   }
 
+  void _openSettingsTab() {
+    _onTabTapped(2);
+  }
+
+  void _openListenTab() {
+    _onTabTapped(0);
+  }
+
   @override
   Widget build(BuildContext context) {
     List<Widget> pages = [
@@ -848,8 +980,10 @@ class _MainNavigatorState extends State<MainNavigator> {
         asrModel: userAsrModel,
         llmModel: userLlmModel,
         customBaseUrl: userCustomBaseUrl,
+        onConfigureApiKey: _openSettingsTab,
+        onStartFirstLesson: _openListenTab,
       ),
-      const HistoryScreen(),
+      HistoryScreen(onStartFirstLesson: _openListenTab),
       SettingsScreen(
         currentApiKey: userApiKey,
         currentAsrModel: userAsrModel,
@@ -1189,6 +1323,8 @@ class HomeScreen extends StatelessWidget {
   final String asrModel;
   final String llmModel;
   final String customBaseUrl;
+  final VoidCallback onConfigureApiKey;
+  final VoidCallback onStartFirstLesson;
 
   const HomeScreen({
     super.key,
@@ -1196,6 +1332,8 @@ class HomeScreen extends StatelessWidget {
     required this.asrModel,
     required this.llmModel,
     required this.customBaseUrl,
+    required this.onConfigureApiKey,
+    required this.onStartFirstLesson,
   });
 
   void _showSubjectDialog(BuildContext context) {
@@ -1295,6 +1433,21 @@ class HomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (apiKey.isEmpty) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: EmptyStateView(
+            title: '还没有配置 API Key',
+            description: '先完成一次基础配置，才能开始自动记录课堂内容。',
+            actionLabel: '去配置 API Key',
+            onAction: onConfigureApiKey,
+            iconSvg: _emptyMicSvg,
+          ),
+        ),
+      );
+    }
+
     return SafeArea(
       child: Center(
         child: Column(
@@ -1312,18 +1465,7 @@ class HomeScreen extends StatelessWidget {
             const SizedBox(height: 10),
             const SizedBox(height: 80),
             GestureDetector(
-              onTap: () {
-                if (apiKey.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('请先在设置中填写 API Key。'),
-                      backgroundColor: Colors.orange,
-                    ),
-                  );
-                  return;
-                }
-                _showSubjectDialog(context);
-              },
+              onTap: () => _showSubjectDialog(context),
               child: GlassmorphismContainer(
                 width: 180,
                 height: 180,
@@ -1346,7 +1488,9 @@ class HomeScreen extends StatelessWidget {
 
 // ================= 历史记录列表页 =================
 class HistoryScreen extends StatefulWidget {
-  const HistoryScreen({super.key});
+  final VoidCallback onStartFirstLesson;
+
+  const HistoryScreen({super.key, required this.onStartFirstLesson});
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -1603,6 +1747,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (historyList.isEmpty) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: EmptyStateView(
+            title: '还没有课堂记录',
+            description: '开始第一节课后，这里会自动保存你的课堂内容。',
+            actionLabel: '开始第一节课',
+            onAction: widget.onStartFirstLesson,
+            iconSvg: _emptyBoxSvg,
+          ),
+        ),
+      );
+    }
+
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -1646,152 +1805,140 @@ class _HistoryScreenState extends State<HistoryScreen> {
             ),
             const SizedBox(height: 20),
             Expanded(
-              child: historyList.isEmpty
-                  ? const Center(
-                      child: Text(
-                        '暂无历史记录\n去开始一节课程吧',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white30, height: 1.5),
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: historyList.length,
-                      itemBuilder: (context, index) {
-                        var session = historyList[index];
-                        String preview = session.transcript.replaceAll(
-                          '\n',
-                          ' ',
-                        );
-                        if (preview.length > 50)
-                          preview = '${preview.substring(0, 50)}...';
+              child: ListView.builder(
+                itemCount: historyList.length,
+                itemBuilder: (context, index) {
+                  var session = historyList[index];
+                  String preview = session.transcript.replaceAll('\n', ' ');
+                  if (preview.length > 50) {
+                    preview = '${preview.substring(0, 50)}...';
+                  }
 
-                        return GestureDetector(
-                          onLongPress: () => _deleteSession(session),
-                          onTap: () async {
-                            // 等待详情页返回（因为详情页里可能修改了卡片），返回后重新拉取最新数据刷新列表
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    HistoryDetailScreen(session: session),
-                              ),
-                            );
-                            _loadHistory();
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.only(bottom: 16),
-                            child: GlassmorphismContainer(
-                              padding: const EdgeInsets.all(16),
-                              borderColor: Colors.cyanAccent.withOpacity(0.2),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          _displayTitle(session),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Colors.amber,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      IconButton(
-                                        tooltip: '修改标题',
-                                        icon: const Icon(
-                                          Icons.edit,
-                                          color: Colors.cyanAccent,
-                                          size: 18,
-                                        ),
-                                        onPressed: () =>
-                                            _renameSessionTitle(session),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.menu_book_rounded,
-                                        size: 14,
-                                        color: Colors.white54,
-                                      ),
-                                      const SizedBox(width: 5),
-                                      Expanded(
-                                        child: Text(
-                                          session.subject,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      const Icon(
-                                        Icons.schedule,
-                                        size: 14,
-                                        color: Colors.white54,
-                                      ),
-                                      const SizedBox(width: 5),
-                                      Text(
-                                        session.dateStr,
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    preview,
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.7),
-                                      fontSize: 13,
-                                      height: 1.4,
+                  return GestureDetector(
+                    onLongPress: () => _deleteSession(session),
+                    onTap: () async {
+                      // 等待详情页返回（因为详情页里可能修改了卡片），返回后重新拉取最新数据刷新列表
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              HistoryDetailScreen(session: session),
+                        ),
+                      );
+                      _loadHistory();
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      child: GlassmorphismContainer(
+                        padding: const EdgeInsets.all(16),
+                        borderColor: Colors.cyanAccent.withOpacity(0.2),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    _displayTitle(session),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.amber,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
                                     ),
                                   ),
-                                  const SizedBox(height: 10),
-                                  Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.memory,
-                                        size: 14,
-                                        color: Colors.purpleAccent,
-                                      ),
-                                      const SizedBox(width: 5),
-                                      Text(
-                                        '提炼了 ${session.summaries.length} 个知识模块',
-                                        style: const TextStyle(
-                                          color: Colors.purpleAccent,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                      const Spacer(),
-                                      const Icon(
-                                        Icons.arrow_forward_ios,
-                                        size: 12,
-                                        color: Colors.white30,
-                                      ),
-                                    ],
+                                ),
+                                const SizedBox(width: 8),
+                                IconButton(
+                                  tooltip: '修改标题',
+                                  icon: const Icon(
+                                    Icons.edit,
+                                    color: Colors.cyanAccent,
+                                    size: 18,
                                   ),
-                                ],
+                                  onPressed: () => _renameSessionTitle(session),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.menu_book_rounded,
+                                  size: 14,
+                                  color: Colors.white54,
+                                ),
+                                const SizedBox(width: 5),
+                                Expanded(
+                                  child: Text(
+                                    session.subject,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                const Icon(
+                                  Icons.schedule,
+                                  size: 14,
+                                  color: Colors.white54,
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  session.dateStr,
+                                  style: const TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              preview,
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.7),
+                                fontSize: 13,
+                                height: 1.4,
                               ),
                             ),
-                          ),
-                        );
-                      },
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.memory,
+                                  size: 14,
+                                  color: Colors.purpleAccent,
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  '提炼了 ${session.summaries.length} 个知识模块',
+                                  style: const TextStyle(
+                                    color: Colors.purpleAccent,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const Spacer(),
+                                const Icon(
+                                  Icons.arrow_forward_ios,
+                                  size: 12,
+                                  color: Colors.white30,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -1814,7 +1961,11 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
   final Map<String, bool> _isAnsweringByTaskId = {};
   final Map<String, String> _answerMarkdownByTaskId = {};
   final Map<String, String?> _answerErrorByTaskId = {};
+  final ItemScrollController _timelineScrollController = ItemScrollController();
+  Timer? _timelineHighlightResetTimer;
   String? _manualTitle;
+  int? _highlightedSourceStartMs;
+  int? _highlightedSourceEndMs;
 
   Future<void> _deleteCurrentSession() async {
     final confirmed = await showDialog<bool>(
@@ -1855,6 +2006,12 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
       ),
     );
     Navigator.pop(context, true);
+  }
+
+  @override
+  void dispose() {
+    _timelineHighlightResetTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -1932,6 +2089,76 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  int? _targetTimelineIndexForCard(SummaryCard card) {
+    final startMs = card.sourceStartTimestampMs;
+    if (startMs == null) return null;
+
+    final nodes = widget.session.timelineNodes;
+    if (nodes.isEmpty) return null;
+
+    final targetIndex = nodes.indexWhere(
+      (node) =>
+          node.type == TimelineNodeType.text && node.timestampMs >= startMs,
+    );
+    if (targetIndex != -1) return targetIndex;
+
+    final fallbackIndex = nodes.indexWhere(
+      (node) => node.timestampMs >= startMs,
+    );
+    return fallbackIndex == -1 ? 0 : fallbackIndex;
+  }
+
+  Future<void> _scrollToCardSource(SummaryCard card) async {
+    final startMs = card.sourceStartTimestampMs;
+    final endMs = card.sourceEndTimestampMs;
+    if (startMs == null || endMs == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('这张卡片还没有绑定到原始转写位置')));
+      return;
+    }
+
+    final index = _targetTimelineIndexForCard(card);
+    if (index == null) return;
+
+    if (!_timelineScrollController.isAttached) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('原文列表尚未准备好')));
+      return;
+    }
+
+    await _timelineScrollController.scrollTo(
+      index: index,
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeInOutCubic,
+      alignment: 0.15,
+    );
+
+    if (!mounted) return;
+    _timelineHighlightResetTimer?.cancel();
+    setState(() {
+      _highlightedSourceStartMs = startMs;
+      _highlightedSourceEndMs = endMs;
+    });
+    _timelineHighlightResetTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      setState(() {
+        _highlightedSourceStartMs = null;
+        _highlightedSourceEndMs = null;
+      });
+    });
+  }
+
+  bool _isNodeHighlighted(TimelineNode node) {
+    final start = _highlightedSourceStartMs;
+    final end = _highlightedSourceEndMs;
+    if (start == null || end == null) return false;
+    return node.type == TimelineNodeType.text &&
+        node.timestampMs >= start &&
+        node.timestampMs <= end;
   }
 
   void _showTimelineImagePreview(TimelineNode node) {
@@ -2569,7 +2796,7 @@ $context
                     ),
                     Spacer(),
                     Text(
-                      '(长按可修正)',
+                      '(点击可溯源，长按可修正)',
                       style: TextStyle(color: Colors.white30, fontSize: 10),
                     ),
                   ],
@@ -2579,6 +2806,7 @@ $context
                   int idx = entry.key;
                   SummaryCard card = entry.value;
                   return GestureDetector(
+                    onTap: () => _scrollToCardSource(card),
                     onLongPress: () => _showEditDialog(idx, card),
                     child: Container(
                       width: double.infinity,
@@ -2718,21 +2946,33 @@ $context
                   ),
                 ),
                 const SizedBox(height: 10),
-                if (widget.session.timelineNodes.isNotEmpty)
-                  ...buildTimelineWidgets(
-                    widget.session.timelineNodes,
-                    onImageTap: _showTimelineImagePreview,
-                    onImageLongPress: _deleteTimelineImage,
-                  )
-                else
-                  Text(
-                    widget.session.transcript,
-                    style: const TextStyle(
-                      color: Colors.white54,
-                      fontSize: 14,
-                      height: 1.6,
-                    ),
-                  ),
+                SizedBox(
+                  height: MediaQuery.of(context).size.height * 0.42,
+                  child: widget.session.timelineNodes.isNotEmpty
+                      ? ScrollablePositionedList.builder(
+                          itemScrollController: _timelineScrollController,
+                          itemCount: widget.session.timelineNodes.length,
+                          itemBuilder: (context, index) {
+                            final node = widget.session.timelineNodes[index];
+                            return buildTimelineNodeWidget(
+                              node,
+                              onImageTap: _showTimelineImagePreview,
+                              onImageLongPress: _deleteTimelineImage,
+                              isHighlighted: _isNodeHighlighted(node),
+                            );
+                          },
+                        )
+                      : SingleChildScrollView(
+                          child: Text(
+                            widget.session.transcript,
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 14,
+                              height: 1.6,
+                            ),
+                          ),
+                        ),
+                ),
               ],
             ),
           ),
@@ -3249,15 +3489,48 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     return prevNoEndPunc || currStartsWithConnector || prevEndsWeak;
   }
 
-  void _insertSummaryCardsWithContext(String summary) {
+  SummaryCard _buildSummaryCardForSource(
+    String text,
+    List<TimelineNode> sourceNodes, {
+    bool isHighlighted = false,
+  }) {
+    final sourceTimestamps = sourceNodes
+        .map((e) => e.timestampMs)
+        .where((value) => value >= 0)
+        .toList();
+    final start = sourceTimestamps.isEmpty
+        ? null
+        : sourceTimestamps.reduce((a, b) => a < b ? a : b);
+    final end = sourceTimestamps.isEmpty
+        ? null
+        : sourceTimestamps.reduce((a, b) => a > b ? a : b);
+
+    return SummaryCard(
+      text: text,
+      isHighlighted: isHighlighted,
+      sourceStartTimestampMs: start,
+      sourceEndTimestampMs: end,
+    );
+  }
+
+  void _insertSummaryCardsWithContext(
+    String summary,
+    List<TimelineNode> sourceNodes,
+  ) {
     if (summary.contains('```')) {
-      aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+      aiSummaryCards.insert(
+        0,
+        _buildSummaryCardForSource(summary.trim(), sourceNodes),
+      );
       return;
     }
 
     final units = _extractSummaryUnits(summary);
     if (units.isEmpty) {
-      aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+      aiSummaryCards.insert(
+        0,
+        _buildSummaryCardForSource(summary.trim(), sourceNodes),
+      );
       return;
     }
 
@@ -3266,7 +3539,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
           _looksLikeContinuation(unit, aiSummaryCards.first.text)) {
         aiSummaryCards.first.text = '$unit${aiSummaryCards.first.text}';
       } else {
-        aiSummaryCards.insert(0, SummaryCard(text: unit));
+        aiSummaryCards.insert(0, _buildSummaryCardForSource(unit, sourceNodes));
       }
     }
   }
@@ -3344,9 +3617,12 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
               aiSummaryCards.clear();
             }
             if (_enableCardMerge) {
-              _insertSummaryCardsWithContext(summary);
+              _insertSummaryCardsWithContext(summary, windowNodes);
             } else {
-              aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+              aiSummaryCards.insert(
+                0,
+                _buildSummaryCardForSource(summary.trim(), windowNodes),
+              );
             }
             _lastPipelineError = null;
           });
@@ -3424,9 +3700,12 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
               aiSummaryCards.clear();
             }
             if (_enableCardMerge) {
-              _insertSummaryCardsWithContext(summary);
+              _insertSummaryCardsWithContext(summary, windowNodes);
             } else {
-              aiSummaryCards.insert(0, SummaryCard(text: summary.trim()));
+              aiSummaryCards.insert(
+                0,
+                _buildSummaryCardForSource(summary.trim(), windowNodes),
+              );
             }
             _lastPipelineError = null;
           });
