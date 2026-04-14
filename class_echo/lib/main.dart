@@ -225,6 +225,7 @@ String buildTranscriptFromTimelineNodes(List<TimelineNode> nodes) {
 List<Widget> buildTimelineWidgets(
   List<TimelineNode> nodes, {
   required void Function(TimelineNode node) onImageTap,
+  void Function(TimelineNode node)? onImageLongPress,
 }) {
   final sorted = [...nodes]
     ..sort((a, b) => a.timestampMs.compareTo(b.timestampMs));
@@ -244,6 +245,9 @@ List<Widget> buildTimelineWidgets(
             const SizedBox(height: 6),
             GestureDetector(
               onTap: () => onImageTap(node),
+              onLongPress: onImageLongPress == null
+                  ? null
+                  : () => onImageLongPress(node),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
@@ -1955,6 +1959,52 @@ class _HistoryDetailScreenState extends State<HistoryDetailScreen> {
     );
   }
 
+  Future<void> _deleteTimelineImage(TimelineNode node) async {
+    final imagePath = node.imagePath;
+    if (imagePath == null || imagePath.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('删除图片节点'),
+          content: const Text('确认删除这张拍摄图片吗？删除后不可恢复。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            ShadButton.destructive(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      widget.session.timelineNodes.removeWhere((e) => e.id == node.id);
+    });
+    await _saveSessionToPrefs();
+
+    try {
+      final file = File(imagePath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // 图片文件删除失败不影响节点删除。
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('图片已删除')));
+  }
+
   String _difficultyForTask(BountyTask task) {
     final len = task.context.trim().length;
     if (len >= 90) return 'HARD';
@@ -2337,7 +2387,15 @@ $context
       });
 
       if (targetIdx != -1) {
-        history[targetIdx] = jsonEncode(widget.session.toJson());
+        final updatedSession = widget.session.copyWith(
+          transcript: buildTranscriptFromTimelineNodes(
+            widget.session.timelineNodes,
+          ),
+          timelineNodes: widget.session.timelineNodes,
+          summaries: widget.session.summaries,
+          bounties: widget.session.bounties,
+        );
+        history[targetIdx] = jsonEncode(updatedSession.toJson());
         await prefs.setStringList('class_history', history);
       }
     } catch (e) {
@@ -2664,6 +2722,7 @@ $context
                   ...buildTimelineWidgets(
                     widget.session.timelineNodes,
                     onImageTap: _showTimelineImagePreview,
+                    onImageLongPress: _deleteTimelineImage,
                   )
                 else
                   Text(
@@ -4043,6 +4102,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                       children: buildTimelineWidgets(
                         timelineNodes,
                         onImageTap: _showImagePreview,
+                        onImageLongPress: _deleteLiveImageNode,
                       ),
                     ),
                   ),
@@ -4211,6 +4271,53 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         );
       },
     );
+  }
+
+  Future<void> _deleteLiveImageNode(TimelineNode node) async {
+    final imagePath = node.imagePath;
+    if (imagePath == null || imagePath.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('删除图片节点'),
+          content: const Text('确认删除这张拍摄图片吗？删除后不可恢复。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            ShadButton.destructive(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      timelineNodes.removeWhere((e) => e.id == node.id);
+      semanticWindowNodes.removeWhere((e) => e.id == node.id);
+      fullTranscript = buildTranscriptFromTimelineNodes(timelineNodes);
+    });
+
+    try {
+      final file = File(imagePath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // 图片文件删除失败不影响节点删除。
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('图片已删除')));
   }
 }
 
