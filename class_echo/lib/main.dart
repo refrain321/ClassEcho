@@ -3094,15 +3094,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!isRecording) return;
 
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused) {
-      sliceTimer?.cancel();
-      unawaited(_drainAndSendCurrentBuffer());
-      return;
-    }
-
     if (state == AppLifecycleState.resumed && !isBreakMode) {
-      _startSliceTimer();
+      if (sliceTimer == null || !sliceTimer!.isActive) {
+        _startSliceTimer();
+      }
       unawaited(_retryPendingInBackground());
     }
   }
@@ -3180,10 +3175,25 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _startRecorderStream() async {
-    const config = RecordConfig(
+    final config = RecordConfig(
       encoder: AudioEncoder.pcm16bits,
       sampleRate: 16000,
       numChannels: 1,
+      audioInterruption: AudioInterruptionMode.pauseResume,
+      androidConfig: const AndroidRecordConfig(
+        service: AndroidService(
+          title: 'Class Echo 正在后台录音',
+          content: '切换到其他应用时会继续记录课堂内容。',
+        ),
+      ),
+      iosConfig: const IosRecordConfig(
+        categoryOptions: [
+          IosAudioCategoryOption.defaultToSpeaker,
+          IosAudioCategoryOption.allowBluetooth,
+          IosAudioCategoryOption.allowBluetoothA2DP,
+          IosAudioCategoryOption.mixWithOthers,
+        ],
+      ),
     );
     final Stream<List<int>> audioStream = await audioRecorder.startStream(
       config,
