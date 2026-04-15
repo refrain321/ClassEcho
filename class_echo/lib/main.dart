@@ -3005,10 +3005,20 @@ class LiveScreen extends StatefulWidget {
   State<LiveScreen> createState() => _LiveScreenState();
 }
 
+class _DeferredSummaryPayload {
+  final String text;
+  final List<TimelineNode> nodes;
+
+  const _DeferredSummaryPayload({required this.text, required this.nodes});
+}
+
 class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   final AudioRecorder audioRecorder = AudioRecorder();
   static const int _audioSampleRate = 16000;
   static const int _audioBytesPerSample = 2;
+  static const int _maxVisibleTimelineNodes = 240;
+  static const int _maxVisibleSummaryCards = 120;
+  static const int _maxDeferredSummaryQueue = 8;
   // 仅用于展示“本次预估消费”，具体账单以平台结算页为准。
   static const double _asrPriceRmbPerMinute = 0.012;
   bool isRecording = false;
@@ -3020,6 +3030,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   bool _enableCardMerge = true;
   bool _showStabilityPanel = true;
   bool _isRetryingPending = false;
+  bool _isAppInBackground = false;
   int _pendingChunkCount = 0;
   int _uploadedAudioMs = 0;
   String? _lastPipelineError;
@@ -3030,6 +3041,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   List<TimelineNode> timelineNodes = [];
   List<TimelineNode> semanticWindowNodes = [];
   List<SummaryCard> aiSummaryCards = [];
+  final List<_DeferredSummaryPayload> _deferredSummaryQueue = [];
   String semanticBuffer = "";
   bool isPinnedMode = false;
 
@@ -3039,9 +3051,36 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Timer? sliceTimer;
   Timer? _stabilityTimer;
 
-  Duration get _sliceDuration => const Duration(seconds: 15);
+  bool get _isLowPowerProfile => isPowerSavingMode || _isAppInBackground;
 
-  int get _semanticMinLength => 60;
+  Duration get _sliceDuration {
+    if (_isAppInBackground && isPowerSavingMode) {
+      return const Duration(seconds: 45);
+    }
+    if (_isLowPowerProfile) {
+      return const Duration(seconds: 30);
+    }
+    return const Duration(seconds: 15);
+  }
+
+  int get _semanticMinLength => _isLowPowerProfile ? 140 : 60;
+
+  List<TimelineNode> get _visibleTimelineNodes {
+    if (timelineNodes.length <= _maxVisibleTimelineNodes) {
+      return timelineNodes;
+    }
+    return timelineNodes.sublist(
+      timelineNodes.length - _maxVisibleTimelineNodes,
+    );
+  }
+
+  List<SummaryCard> get _visibleDisplayedCards {
+    final cards = displayedCards;
+    if (cards.length <= _maxVisibleSummaryCards) {
+      return cards;
+    }
+    return cards.sublist(0, _maxVisibleSummaryCards);
+  }
 
   @override
   void initState() {
@@ -3067,6 +3106,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     _refreshPendingCount();
     _stabilityTimer?.cancel();
     _stabilityTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+      if (_isAppInBackground) return;
       unawaited(_refreshPendingCount());
     });
   }
@@ -3074,19 +3114,56 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Future<void> _refreshPendingCount() async {
     final count = await PendingAudioTaskStore.instance.countPending();
     if (!mounted) return;
+    if (_isAppInBackground) {
+      _pendingChunkCount = count;
+      return;
+    }
     setState(() => _pendingChunkCount = count);
   }
 
   Future<void> _retryPendingInBackground() async {
     if (_isRetryingPending) return;
-    setState(() => _isRetryingPending = true);
+    if (!_isAppInBackground && mounted) {
+      setState(() => _isRetryingPending = true);
+    } else {
+      _isRetryingPending = true;
+    }
     try {
       await PendingAudioRetryService.retryAllPendingTasks();
       await _refreshPendingCount();
     } finally {
-      if (mounted) {
+      if (mounted && !_isAppInBackground) {
         setState(() => _isRetryingPending = false);
+      } else {
+        _isRetryingPending = false;
       }
+    }
+  }
+
+  void _enqueueDeferredSummary(String text, List<TimelineNode> nodes) {
+    final normalizedText = text.trim();
+    if (normalizedText.isEmpty) return;
+    if (_deferredSummaryQueue.length >= _maxDeferredSummaryQueue) {
+      _deferredSummaryQueue.removeAt(0);
+    }
+    _deferredSummaryQueue.add(
+      _DeferredSummaryPayload(
+        text: normalizedText,
+        nodes: List<TimelineNode>.from(nodes),
+      ),
+    );
+  }
+
+  Future<void> _flushDeferredSummaries({bool force = false}) async {
+    if (_deferredSummaryQueue.isEmpty) return;
+    if (!force && _isLowPowerProfile) return;
+
+    while (_deferredSummaryQueue.isNotEmpty) {
+      if (!force && (!mounted || !isRecording)) {
+        return;
+      }
+      final payload = _deferredSummaryQueue.removeAt(0);
+      await _callLLMBrain(payload.text, payload.nodes);
     }
   }
 
@@ -3094,17 +3171,38 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!isRecording) return;
 
-    if (state == AppLifecycleState.resumed && !isBreakMode) {
-      if (sliceTimer == null || !sliceTimer!.isActive) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _isAppInBackground = true;
+      if (!isBreakMode) {
         _startSliceTimer();
       }
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      _isAppInBackground = false;
+      if (!isBreakMode && (sliceTimer == null || !sliceTimer!.isActive)) {
+        _startSliceTimer();
+      }
+      _startStabilityRefreshLoop();
       unawaited(_retryPendingInBackground());
+      unawaited(_flushDeferredSummaries());
     }
   }
 
   void _appendTranscriptSegment(TranscriptSegment segment) {
+    final hasOutOfOrderSegment =
+        transcriptSegments.isNotEmpty &&
+        transcriptSegments.last.timestampMs > segment.timestampMs;
     transcriptSegments.add(segment);
-    transcriptSegments.sort((a, b) => a.timestampMs.compareTo(b.timestampMs));
+    if (hasOutOfOrderSegment) {
+      transcriptSegments.sort((a, b) => a.timestampMs.compareTo(b.timestampMs));
+    }
+    final hasOutOfOrderTimelineNode =
+        timelineNodes.isNotEmpty &&
+        timelineNodes.last.timestampMs > segment.timestampMs;
     timelineNodes.add(
       TimelineNode.text(
         id: 'text_${segment.timestampMs}_${transcriptSegments.length}',
@@ -3112,12 +3210,44 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         text: segment.text,
       ),
     );
-    fullTranscript = buildTranscriptFromTimelineNodes(timelineNodes);
+    if (hasOutOfOrderTimelineNode) {
+      fullTranscript = buildTranscriptFromTimelineNodes(timelineNodes);
+    } else {
+      _appendNodeToTranscriptText(timelineNodes.last);
+    }
   }
 
   void _appendImageNode(TimelineNode node) {
+    final hasOutOfOrderTimelineNode =
+        timelineNodes.isNotEmpty &&
+        timelineNodes.last.timestampMs > node.timestampMs;
     timelineNodes.add(node);
-    fullTranscript = buildTranscriptFromTimelineNodes(timelineNodes);
+    if (hasOutOfOrderTimelineNode) {
+      fullTranscript = buildTranscriptFromTimelineNodes(timelineNodes);
+    } else {
+      _appendNodeToTranscriptText(node);
+    }
+  }
+
+  void _appendNodeToTranscriptText(TimelineNode node) {
+    final time = formatTimeForTranscript(node.timestampMs);
+    String? line;
+    if (node.type == TimelineNodeType.text) {
+      final text = (node.text ?? '').trim();
+      if (text.isEmpty) return;
+      line = '[$time] $text';
+    } else {
+      final label = node.imageLabel?.trim().isNotEmpty == true
+          ? node.imageLabel!.trim()
+          : '白板快照';
+      line = '[$time] [图片节点] $label';
+    }
+
+    if (fullTranscript.startsWith('等待老师发言')) {
+      fullTranscript = '$line\n';
+      return;
+    }
+    fullTranscript = '$fullTranscript$line\n';
   }
 
   void _appendSemanticWindowNode(TimelineNode node) {
@@ -3342,7 +3472,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
       if (response.statusCode == 200) {
         String text = jsonDecode(responseData)['text'].toString().trim();
-        if (_enableContextCorrection) {
+        if (_enableContextCorrection && !_isLowPowerProfile) {
           text = await _repairTranscriptByContext(text);
         }
         if (text.isNotEmpty && mounted) {
@@ -3453,6 +3583,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       final textToSummarize = semanticBuffer;
       final nodesToSummarize = List<TimelineNode>.from(semanticWindowNodes);
       _clearSemanticWindow();
+      if (_isLowPowerProfile) {
+        _enqueueDeferredSummary(textToSummarize, nodesToSummarize);
+        return;
+      }
       _callLLMBrain(textToSummarize, nodesToSummarize);
     }
   }
@@ -3795,6 +3929,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       }
     }
 
+    if (!fastMode) {
+      await _flushDeferredSummaries(force: true);
+    }
+
     if (!fastMode && semanticBuffer.trim().isNotEmpty) {
       final String remainText = semanticBuffer;
       final nodesToSummarize = List<TimelineNode>.from(semanticWindowNodes);
@@ -3871,13 +4009,21 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     setState(() {
       isPowerSavingMode = !isPowerSavingMode;
     });
+    if (isRecording && !isBreakMode) {
+      _startSliceTimer();
+    }
     if (isPowerSavingMode) {
       await WakelockPlus.disable();
     } else if (isRecording) {
       await WakelockPlus.enable();
+      if (!_isAppInBackground) {
+        unawaited(_flushDeferredSummaries());
+      }
     }
     _showRealtimeStatusSnackBar(
-      isPowerSavingMode ? '省电模式已开启：仅降低手机自身功耗，不影响识别与总结功能。' : '省电模式已关闭。',
+      isPowerSavingMode
+          ? '省电模式已开启：降低后台计算频率，纠错与要点总结会延后执行。'
+          : '省电模式已关闭：已恢复实时纠错与要点总结。',
     );
   }
 
@@ -4280,6 +4426,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final visibleTimelineNodes = _visibleTimelineNodes;
+    final visibleCards = _visibleDisplayedCards;
+
     return WillPopScope(
       onWillPop: _handleBackAttempt,
       child: Scaffold(
@@ -4384,16 +4533,19 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                 flex: 4,
                 child: GlassmorphismContainer(
                   padding: const EdgeInsets.all(16),
-                  child: SingleChildScrollView(
+                  child: ListView.builder(
                     reverse: true,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: buildTimelineWidgets(
-                        timelineNodes,
+                    itemCount: visibleTimelineNodes.length,
+                    itemBuilder: (context, index) {
+                      final reverseIndex =
+                          visibleTimelineNodes.length - 1 - index;
+                      final node = visibleTimelineNodes[reverseIndex];
+                      return buildTimelineNodeWidget(
+                        node,
                         onImageTap: _showImagePreview,
                         onImageLongPress: _deleteLiveImageNode,
-                      ),
-                    ),
+                      );
+                    },
                   ),
                 ),
               ),
@@ -4403,9 +4555,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                 child: GlassmorphismContainer(
                   padding: const EdgeInsets.all(16),
                   child: ListView.builder(
-                    itemCount: displayedCards.length,
+                    itemCount: visibleCards.length,
                     itemBuilder: (context, index) {
-                      var card = displayedCards[index];
+                      final card = visibleCards[index];
                       return GestureDetector(
                         onTap: () => setState(
                           () => card.isHighlighted = !card.isHighlighted,
