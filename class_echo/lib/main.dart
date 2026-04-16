@@ -14,56 +14,13 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:shadcn_ui/shadcn_ui.dart' as shad;
-import 'package:flutter_highlight/flutter_highlight.dart';
-import 'package:flutter_highlight/themes/atom-one-dark.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
+import 'package:shadcn_ui/shadcn_ui.dart';
+import 'package:shadcn_ui/shadcn_ui.dart' as shad;
 import 'widgets/enhanced_markdown_view.dart';
-
-typedef ShadThemeData = shad.ShadThemeData;
-typedef ShadButton = shad.ShadButton;
-typedef ShadInput = shad.ShadInput;
-typedef ShadCard = shad.ShadCard;
-
-class ShadApp {
-  static Widget material({
-    required Widget home,
-    required String title,
-    bool debugShowCheckedModeBanner = false,
-    ShadThemeData? theme,
-    ShadThemeData? darkTheme,
-    ThemeMode? themeMode,
-  }) {
-    return shad.ShadApp.custom(
-      theme: theme,
-      darkTheme: darkTheme,
-      themeMode: themeMode,
-      appBuilder: (_) => MaterialApp(
-        title: title,
-        debugShowCheckedModeBanner: debugShowCheckedModeBanner,
-        themeMode: themeMode ?? ThemeMode.dark,
-        theme: ThemeData(
-          useMaterial3: true,
-          brightness: Brightness.dark,
-          scaffoldBackgroundColor: const Color(0xFF0B0D10),
-          canvasColor: const Color(0xFF0B0D10),
-          splashColor: Colors.transparent,
-          highlightColor: Colors.transparent,
-        ),
-        darkTheme: ThemeData(
-          useMaterial3: true,
-          brightness: Brightness.dark,
-          scaffoldBackgroundColor: const Color(0xFF0B0D10),
-          canvasColor: const Color(0xFF0B0D10),
-          splashColor: Colors.transparent,
-          highlightColor: Colors.transparent,
-        ),
-        home: home,
-      ),
-    );
-  }
-}
 
 void main() {
   runApp(const ClassEchoApp());
@@ -76,6 +33,7 @@ const String defaultApiBaseUrl = 'https://api.siliconflow.cn';
 const String prefEnableContextCorrection = 'enable_context_correction';
 const String prefEnableCardMerge = 'enable_card_merge';
 const String prefShowStabilityPanel = 'show_stability_panel';
+const String prefClassPresets = 'class_presets';
 
 const Map<String, String> asrModelDescriptions = {
   'FunAudioLLM/SenseVoiceSmall': '中文识别稳定，延迟低，适合课堂实时转写。',
@@ -756,6 +714,35 @@ class BountyTask {
   );
 }
 
+class ClassPreset {
+  final String id;
+  final String subject;
+  final String focusTerms;
+  final int createdAtMs;
+
+  ClassPreset({
+    String? id,
+    required this.subject,
+    required this.focusTerms,
+    int? createdAtMs,
+  }) : id = id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+       createdAtMs = createdAtMs ?? DateTime.now().millisecondsSinceEpoch;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'subject': subject,
+    'focusTerms': focusTerms,
+    'createdAtMs': createdAtMs,
+  };
+
+  factory ClassPreset.fromJson(Map<String, dynamic> json) => ClassPreset(
+    id: json['id']?.toString(),
+    subject: json['subject']?.toString() ?? '',
+    focusTerms: json['focusTerms']?.toString() ?? '',
+    createdAtMs: json['createdAtMs'] as int?,
+  );
+}
+
 class TranscriptSegment {
   final int timestampMs;
   final String text;
@@ -878,7 +865,7 @@ class ClassEchoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ShadApp.material(
+    return ShadApp(
       title: 'ClassEcho',
       debugShowCheckedModeBanner: false,
       home: const MainNavigator(),
@@ -1318,7 +1305,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 // ================= 主屏幕 =================
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   final String apiKey;
   final String asrModel;
   final String llmModel;
@@ -1336,11 +1323,123 @@ class HomeScreen extends StatelessWidget {
     required this.onStartFirstLesson,
   });
 
-  void _showSubjectDialog(BuildContext context) {
-    TextEditingController subjectController = TextEditingController();
-    TextEditingController termsController = TextEditingController();
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
 
-    showGeneralDialog(
+class _HomeScreenState extends State<HomeScreen> {
+  List<ClassPreset> _presets = [];
+  bool _isLoadingPresets = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPresets();
+  }
+
+  Future<void> _loadPresets() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList(prefClassPresets) ?? [];
+    if (!mounted) return;
+    setState(() {
+      _presets = saved
+          .map((item) => ClassPreset.fromJson(jsonDecode(item)))
+          .toList();
+    });
+  }
+
+  Future<void> _savePresets() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      prefClassPresets,
+      _presets.map((preset) => jsonEncode(preset.toJson())).toList(),
+    );
+  }
+
+  Future<void> _addOrUpdatePreset(ClassPreset preset) async {
+    final normalizedSubject = preset.subject.trim();
+    final normalizedTerms = preset.focusTerms.trim();
+    if (normalizedSubject.isEmpty) return;
+
+    final existingIndex = _presets.indexWhere(
+      (item) =>
+          item.subject.trim() == normalizedSubject &&
+          item.focusTerms.trim() == normalizedTerms,
+    );
+
+    setState(() {
+      if (existingIndex >= 0) {
+        _presets[existingIndex] = preset;
+      } else {
+        _presets.insert(0, preset);
+      }
+    });
+    await _savePresets();
+  }
+
+  Future<void> _deletePreset(ClassPreset preset) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('删除预设课堂'),
+          content: Text('确认删除「${preset.subject}」吗？删除后需要重新保存。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            ShadButton.destructive(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _presets.removeWhere((item) => item.id == preset.id);
+    });
+    await _savePresets();
+  }
+
+  void _startLesson(String subject, String focusTerms) {
+    final normalizedSubject = subject.trim().isEmpty ? '通用课程' : subject.trim();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LiveScreen(
+          apiKey: widget.apiKey,
+          subjectName: normalizedSubject,
+          focusTerms: focusTerms.trim(),
+          asrModel: widget.asrModel,
+          llmModel: widget.llmModel,
+          customBaseUrl: widget.customBaseUrl,
+        ),
+      ),
+    );
+  }
+
+  void _startPreset(ClassPreset preset) {
+    _startLesson(preset.subject, preset.focusTerms);
+  }
+
+  Future<void> _showSubjectDialog(
+    BuildContext context, {
+    ClassPreset? preset,
+  }) async {
+    final subjectController = TextEditingController(
+      text: preset?.subject ?? '',
+    );
+    final termsController = TextEditingController(
+      text: preset?.focusTerms ?? '',
+    );
+    final rootContext = context;
+
+    await showGeneralDialog(
       context: context,
       barrierDismissible: true,
       barrierLabel: "SubjectDialog",
@@ -1352,13 +1451,13 @@ class HomeScreen extends StatelessWidget {
             color: Colors.transparent,
             child: GlassmorphismContainer(
               width: MediaQuery.of(context).size.width * 0.85,
-              height: 340,
+              height: 470,
               borderRadius: 24,
               borderColor: Colors.amber.withOpacity(0.4),
               backgroundColor: const Color(0xFF1E1B4B).withOpacity(0.7),
               padding: const EdgeInsets.all(24),
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const Text(
                     '📍 设定当前科目',
@@ -1369,7 +1468,105 @@ class HomeScreen extends StatelessWidget {
                       letterSpacing: 1,
                     ),
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 14),
+                  if (_presets.isNotEmpty) ...[
+                    const Text(
+                      '预设课堂',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 74,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _presets.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 10),
+                        itemBuilder: (context, index) {
+                          final item = _presets[index];
+                          return GestureDetector(
+                            onTap: () {
+                              subjectController.text = item.subject;
+                              termsController.text = item.focusTerms;
+                              Navigator.pop(context);
+                              _showSubjectDialog(rootContext, preset: item);
+                            },
+                            onLongPress: () => _deletePreset(item),
+                            child: Stack(
+                              children: [
+                                Container(
+                                  width: 180,
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.06),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: Colors.white.withOpacity(0.08),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Text(
+                                        item.subject,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        item.focusTerms.isEmpty
+                                            ? '点击直接开始'
+                                            : item.focusTerms,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white60,
+                                          fontSize: 11,
+                                          height: 1.25,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 2,
+                                  right: 2,
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: IconButton(
+                                      tooltip: '删除预设',
+                                      padding: EdgeInsets.zero,
+                                      constraints:
+                                          const BoxConstraints.tightFor(
+                                            width: 28,
+                                            height: 28,
+                                          ),
+                                      iconSize: 16,
+                                      icon: const Icon(
+                                        Icons.close,
+                                        color: Colors.white60,
+                                      ),
+                                      onPressed: () => _deletePreset(item),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   ShadInput(
                     controller: subjectController,
                     style: const TextStyle(color: Colors.white, fontSize: 16),
@@ -1386,26 +1583,36 @@ class HomeScreen extends StatelessWidget {
                   const Spacer(),
                   SizedBox(
                     width: double.infinity,
+                    height: 42,
+                    child: ShadButton.outline(
+                      onPressed: () async {
+                        final subject = subjectController.text.trim();
+                        final focusTerms = termsController.text.trim();
+                        if (subject.isEmpty) return;
+                        await _addOrUpdatePreset(
+                          ClassPreset(subject: subject, focusTerms: focusTerms),
+                        );
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(rootContext).showSnackBar(
+                          const SnackBar(
+                            content: Text('已保存为预设课堂'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      },
+                      child: const Text('保存为预设'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
                     height: 45,
                     child: ShadButton(
                       onPressed: () {
-                        String subject = subjectController.text.trim();
-                        final String focusTerms = termsController.text.trim();
-                        if (subject.isEmpty) subject = '通用课程';
+                        final subject = subjectController.text.trim();
+                        final focusTerms = termsController.text.trim();
                         Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => LiveScreen(
-                              apiKey: apiKey,
-                              subjectName: subject,
-                              focusTerms: focusTerms,
-                              asrModel: asrModel,
-                              llmModel: llmModel,
-                              customBaseUrl: customBaseUrl,
-                            ),
-                          ),
-                        );
+                        _startLesson(subject, focusTerms);
                       },
                       child: const Text('开始上课'),
                     ),
@@ -1429,11 +1636,13 @@ class HomeScreen extends StatelessWidget {
         );
       },
     );
+    subjectController.dispose();
+    termsController.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (apiKey.isEmpty) {
+    if (widget.apiKey.isEmpty) {
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -1441,7 +1650,7 @@ class HomeScreen extends StatelessWidget {
             title: '还没有配置 API Key',
             description: '先完成一次基础配置，才能开始自动记录课堂内容。',
             actionLabel: '去配置 API Key',
-            onAction: onConfigureApiKey,
+            onAction: widget.onConfigureApiKey,
             iconSvg: _emptyMicSvg,
           ),
         ),
@@ -1449,12 +1658,15 @@ class HomeScreen extends StatelessWidget {
     }
 
     return SafeArea(
-      child: Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            const SizedBox(height: 12),
             const Text(
               'ClassEcho',
+              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 36,
                 fontWeight: FontWeight.w900,
@@ -1462,21 +1674,231 @@ class HomeScreen extends StatelessWidget {
                 color: Colors.white,
               ),
             ),
-            const SizedBox(height: 10),
-            const SizedBox(height: 80),
-            GestureDetector(
-              onTap: () => _showSubjectDialog(context),
-              child: GlassmorphismContainer(
-                width: 180,
-                height: 180,
-                borderRadius: 90,
-                child: const Center(
-                  child: Icon(
-                    Icons.mic_none_rounded,
-                    size: 80,
-                    color: Colors.cyanAccent,
+            const SizedBox(height: 8),
+            Text(
+              '点击预设即可直接开课，长按可删除预设。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.55),
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 26),
+            if (_isLoadingPresets)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else ...[
+              Row(
+                children: [
+                  const Text(
+                    '预设课堂',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: () => _showSubjectDialog(context),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('添加预设'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (_presets.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.04),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.08)),
+                  ),
+                  child: Text(
+                    '还没有预设课堂。点右侧“添加预设”，保存后下次就可以直接点卡片开课。',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.65),
+                      height: 1.5,
+                    ),
+                  ),
+                )
+              else
+                SizedBox(
+                  height: 132,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _presets.length + 1,
+                    separatorBuilder: (_, __) => const SizedBox(width: 12),
+                    itemBuilder: (context, index) {
+                      if (index == _presets.length) {
+                        return GestureDetector(
+                          onTap: () => _showSubjectDialog(context),
+                          child: Container(
+                            width: 150,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.04),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: Colors.cyanAccent.withOpacity(0.18),
+                              ),
+                            ),
+                            child: const Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.add_circle_outline,
+                                  color: Colors.cyanAccent,
+                                  size: 28,
+                                ),
+                                SizedBox(height: 10),
+                                Text(
+                                  '新增预设',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                SizedBox(height: 4),
+                                Text(
+                                  '保存当前课堂名称和重点词',
+                                  style: TextStyle(
+                                    color: Colors.white60,
+                                    fontSize: 11,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+
+                      final preset = _presets[index];
+                      return GestureDetector(
+                        onTap: () => _startPreset(preset),
+                        onLongPress: () => _deletePreset(preset),
+                        child: Stack(
+                          children: [
+                            Container(
+                              width: 190,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.08),
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.bookmark_rounded,
+                                        color: Colors.amber,
+                                        size: 18,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          preset.subject,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    preset.focusTerms.isEmpty
+                                        ? '点击直接开始'
+                                        : preset.focusTerms,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white60,
+                                      fontSize: 12,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    '点按开课 · 长按删除',
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.4),
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Positioned(
+                              top: 2,
+                              right: 2,
+                              child: Material(
+                                color: Colors.transparent,
+                                child: IconButton(
+                                  tooltip: '删除预设',
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints.tightFor(
+                                    width: 28,
+                                    height: 28,
+                                  ),
+                                  iconSize: 16,
+                                  icon: const Icon(
+                                    Icons.close,
+                                    color: Colors.white60,
+                                  ),
+                                  onPressed: () => _deletePreset(preset),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
+            ],
+            const SizedBox(height: 30),
+            GestureDetector(
+              onTap: () => _showSubjectDialog(context),
+              child: Center(
+                child: GlassmorphismContainer(
+                  width: 180,
+                  height: 180,
+                  borderRadius: 90,
+                  child: const Center(
+                    child: Icon(
+                      Icons.mic_none_rounded,
+                      size: 80,
+                      color: Colors.cyanAccent,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '也可以继续点中间按钮手动输入课堂名称。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.5),
+                fontSize: 11,
               ),
             ),
           ],
@@ -1499,6 +1921,51 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   List<ClassSession> historyList = [];
   bool _isBackfillingTitles = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedJsonList = prefs.getStringList('class_history') ?? [];
+    if (!mounted) return;
+    setState(() {
+      historyList = savedJsonList
+          .map((jsonStr) => ClassSession.fromJson(jsonDecode(jsonStr)))
+          .toList();
+    });
+    unawaited(_backfillMissingTitles());
+  }
+
+  String _fallbackTitle(ClassSession session) {
+    if (session.summaries.isNotEmpty) {
+      final t = session.summaries.first.text.trim();
+      if (t.isNotEmpty) {
+        return t.length > 20 ? '${t.substring(0, 20)}...' : t;
+      }
+    }
+    final line = session.transcript
+        .split('\n')
+        .map((e) => e.trim())
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '课程记录');
+    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '');
+    if (cleaned.isEmpty) return '课程记录';
+    return cleaned.length > 20 ? '${cleaned.substring(0, 20)}...' : cleaned;
+  }
+
+  String _displayTitle(ClassSession session) {
+    final custom = session.title.trim();
+    if (custom.isNotEmpty) return custom;
+    return _fallbackTitle(session);
+  }
+
+  Future<void> _saveHistory(List<String> history) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('class_history', history);
+  }
 
   Future<void> _deleteSession(ClassSession session) async {
     final confirmed = await showDialog<bool>(
@@ -1529,7 +1996,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final item = ClassSession.fromJson(jsonDecode(jsonStr));
       return item.sessionId == session.sessionId;
     });
-    await prefs.setStringList('class_history', history);
+    await _saveHistory(history);
     await _loadHistory();
 
     if (!mounted) return;
@@ -1539,28 +2006,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
         behavior: SnackBarBehavior.floating,
       ),
     );
-  }
-
-  String _fallbackTitle(ClassSession session) {
-    if (session.summaries.isNotEmpty) {
-      final t = session.summaries.first.text.trim();
-      if (t.isNotEmpty) {
-        return t.length > 20 ? '${t.substring(0, 20)}...' : t;
-      }
-    }
-    final line = session.transcript
-        .split('\n')
-        .map((e) => e.trim())
-        .firstWhere((e) => e.isNotEmpty, orElse: () => '课程记录');
-    final cleaned = line.replaceAll(RegExp(r'^\[[^\]]+\]\s*'), '');
-    if (cleaned.isEmpty) return '课程记录';
-    return cleaned.length > 20 ? '${cleaned.substring(0, 20)}...' : cleaned;
-  }
-
-  String _displayTitle(ClassSession session) {
-    final custom = session.title.trim();
-    if (custom.isNotEmpty) return custom;
-    return _fallbackTitle(session);
   }
 
   Future<void> _renameSessionTitle(ClassSession session) async {
@@ -1600,27 +2045,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     if (idx == -1) return;
 
     final old = ClassSession.fromJson(jsonDecode(history[idx]));
-    final updated = old.copyWith(title: newTitle);
-    history[idx] = jsonEncode(updated.toJson());
-    await prefs.setStringList('class_history', history);
+    history[idx] = jsonEncode(old.copyWith(title: newTitle).toJson());
+    await _saveHistory(history);
     await _loadHistory();
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _loadHistory();
-  }
-
-  Future<void> _loadHistory() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedJsonList = prefs.getStringList('class_history') ?? [];
-    setState(() {
-      historyList = savedJsonList
-          .map((jsonStr) => ClassSession.fromJson(jsonDecode(jsonStr)))
-          .toList();
-    });
-    unawaited(_backfillMissingTitles());
   }
 
   Future<String> _generateAiTitleForSession(
@@ -1700,9 +2127,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final indexes = <int>[];
     for (int i = 0; i < history.length; i++) {
       final item = ClassSession.fromJson(jsonDecode(history[i]));
-      if (item.title.trim().isEmpty) {
-        indexes.add(i);
-      }
+      if (item.title.trim().isEmpty) indexes.add(i);
     }
     if (indexes.isEmpty) return;
 
@@ -1716,10 +2141,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
           llmModel,
           customBaseUrl,
         );
-        final updated = old.copyWith(title: aiTitle);
-        history[idx] = jsonEncode(updated.toJson());
+        history[idx] = jsonEncode(old.copyWith(title: aiTitle).toJson());
       }
-      await prefs.setStringList('class_history', history);
+      await _saveHistory(history);
       if (!mounted) return;
       setState(() {
         historyList = history
@@ -1808,16 +2232,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
               child: ListView.builder(
                 itemCount: historyList.length,
                 itemBuilder: (context, index) {
-                  var session = historyList[index];
-                  String preview = session.transcript.replaceAll('\n', ' ');
-                  if (preview.length > 50) {
+                  final session = historyList[index];
+                  var preview = session.transcript.replaceAll('\n', ' ');
+                  if (preview.length > 50)
                     preview = '${preview.substring(0, 50)}...';
-                  }
 
                   return GestureDetector(
                     onLongPress: () => _deleteSession(session),
                     onTap: () async {
-                      // 等待详情页返回（因为详情页里可能修改了卡片），返回后重新拉取最新数据刷新列表
                       await Navigator.push(
                         context,
                         MaterialPageRoute(
